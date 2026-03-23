@@ -1,0 +1,425 @@
+
+<!DOCTYPE html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <title>Medarbejderhåndtering TS – Prototype</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0f172a; --panel:#111827; --card:#0b1220; --muted:#94a3b8;
+      --brand:#22c55e; --accent:#38bdf8; --danger:#ef4444; --warn:#f59e0b; --ok:#10b981;
+      --text:#e5e7eb; --text-strong:#f8fafc; --border:#1f2937;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:linear-gradient(180deg,#0a1222,#0b1730 50%,#09101d); color:var(--text);}
+    header{
+      background:linear-gradient(90deg,#1b2b45 0%, #1a2e40 35%, #173a4a 100%);
+      border-bottom:1px solid var(--border);
+      padding:12px 16px; position:sticky; top:0; z-index:10;
+      display:flex; align-items:center; gap:12px;
+    }
+    header h1{margin:0; font-size:16px; letter-spacing:.4px; color:#bfe8ff;}
+    .app{display:grid; grid-template-columns:280px 1fr; gap:16px; padding:16px;}
+    .panel{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:12px;}
+    .muted{color:var(--muted)}
+    input,select,textarea{background:#0b1424; color:var(--text); border:1px solid #1e293b; border-radius:8px; padding:8px; width:100%;}
+    .btn{border:1px solid #264653; background:#0c1b2b; color:#d8f6ff; padding:8px 12px; border-radius:8px; cursor:pointer}
+    .btn.brand{border-color:#065f46; background:#062a1e; color:#bff6d8}
+    .btn.accent{border-color:#075985; background:#062035; color:#c9ebff}
+    .btn.warn{border-color:#7c2d12; background:#2a1206; color:#ffd7ae}
+    .btn.danger{border-color:#7f1d1d; background:#2b0c0c; color:#ffcccc}
+    .list{display:flex; flex-direction:column; gap:8px; max-height:70vh; overflow:auto;}
+    .card{background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px;}
+    .row{display:grid; grid-template-columns:repeat(2,1fr); gap:8px}
+    .row3{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+    .tag{display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #1f2f45; color:#cde9ff; font-size:12px}
+    .tag.ok{border-color:#0b5; color:#c9ffe9}
+    .tag.warn{border-color:#fb923c; color:#ffd7ae}
+    .tag.danger{border-color:#ef4444; color:#ffb3b3}
+    .toolbar{display:flex; gap:8px; margin:8px 0 12px}
+    .grid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+    @media (max-width: 1080px){ .app{grid-template-columns:1fr} .grid{grid-template-columns:1fr} }
+    dialog::backdrop{background:rgba(0,0,0,.6)}
+    .right{display:flex; gap:8px; margin-left:auto}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Medarbejderhåndtering TS · Prototype</h1>
+    <div class="right">
+      <span id="loginUser" class="muted"></span>
+      <button id="btnLogout" class="btn">Log ud</button>
+    </div>
+  </header>
+
+  <div id="login" class="app" style="grid-template-columns:1fr; max-width:640px; margin:auto;">
+    <div class="panel">
+      <h2>Log ind</h2>
+      <p class="muted">Brug masterkode og din personlige PIN.</p>
+      <div class="row">
+        <div>
+          <label>Masterkode</label>
+          <input id="master" type="password" placeholder="••••••••" />
+        </div>
+        <div>
+          <label>Initialer</label>
+          <input id="initials" placeholder="MSA / NIGAM / DAFLE" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>PIN</label>
+          <input id="pin" type="password" placeholder="****" />
+        </div>
+        <div style="display:flex; align-items:flex-end;">
+          <button id="btnLogin" class="btn brand">Log ind</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app" style="display:none;">
+    <!-- Sidebar -->
+    <aside class="panel">
+      <h3>Filtre</h3>
+      <div class="row3">
+        <div>
+          <label>Team</label>
+          <select id="filterTeam">
+            <option value="">Alle teams</option>
+          </select>
+        </div>
+        <div>
+          <label>Status</label>
+          <select id="filterStatus">
+            <option value="">Alle</option>
+            <option>Aktiv</option>
+            <option>Opsagt</option>
+            <option>Udlånt</option>
+            <option>Barsel</option>
+          </select>
+        </div>
+        <div>
+          <label>Søg</label>
+          <input id="search" placeholder="Navn eller initialer…" />
+        </div>
+      </div>
+      <div class="toolbar">
+        <button id="btnNew" class="btn accent">+ Ny medarbejder</button>
+        <button id="btnExport" class="btn">Eksportér JSON</button>
+      </div>
+      <div id="list" class="list"></div>
+    </aside>
+
+    <!-- Main -->
+    <main class="panel">
+      <div id="details" class="muted">Vælg en medarbejder i venstre side…</div>
+    </main>
+  </div>
+
+
+  <!-- Dialog (edit) -->
+  <dialog id="dlgEdit">
+    <form method="dialog" class="panel" style="width:min(900px, 92vw);">
+      <h3 id="dlgTitle">Ny medarbejder</h3>
+      <div class="grid">
+        <div class="row3">
+          <div><label>Team</label><select id="f_team"></select></div>
+          <div><label>Status</label>
+            <select id="f_status">
+              <option>Aktiv</option><option>Opsagt</option><option>Udlånt</option><option>Barsel</option>
+            </select>
+          </div>
+          <div><label>Enneagram</label><input id="f_enneagram" /></div>
+        </div>
+
+        <div class="row3">
+          <div><label>Navn</label><input id="f_navn" /></div>
+          <div><label>Initialer</label><input id="f_initialer" /></div>
+          <div><label>Roller</label><input id="f_roller" placeholder="fx G / M / G/M" /></div>
+        </div>
+
+        <div class="row3">
+          <div><label>Ansættelsesform</label><input id="f_form" placeholder="Fastansat / Studentermedhjælper…" /></div>
+          <div><label>Kontrakt (timer)</label><input id="f_timer" type="number" /></div>
+          <div><label>Kontaktnr.</label><input id="f_kontakt" /></div>
+        </div>
+
+        <div class="row3">
+          <div><label>Kontraktstart</label><input id="f_start" type="date" /></div>
+          <div><label>Kontraktudløb</label><input id="f_udloeb" type="date" /></div>
+          <div><label>Ny kontrakt efter udløb</label><input id="f_nykontrakt" /></div>
+        </div>
+
+        <div class="row3">
+          <div><label>Foto (URL)</label><input id="f_foto" placeholder="https://…" /></div>
+          <div><label>Erstatning søgt?</label>
+            <select id="f_fte_soegt"><option value="false">Nej</option><option value="true">Ja</option></select>
+          </div>
+          <div><label>Erstatnings‑ID</label><input id="f_fte_id" placeholder="fx 820 / 863 …" /></div>
+        </div>
+
+        <div>
+          <label>Noter</label>
+          <textarea id="f_noter" rows="3"></textarea>
+        </div>
+      </div>
+
+      <div class="toolbar" style="justify-content:flex-end;">
+        <button class="btn" value="cancel">Annullér</button>
+        <button id="btnSave" class="btn brand" value="default">Gem</button>
+      </div>
+    </form>
+  </dialog>
+
+
+  <script>
+    const PATH = "./medarbejdere.json";
+    let db = null, currentUser = null, current = null;
+    const $ = (s,p=document)=>p.querySelector(s);
+    const $$ = (s,p=document)=>[...p.querySelectorAll(s)];
+
+    const fmt = d => d ? new Date(d).toLocaleDateString("da-DK") : "—";
+
+    (async function init(){
+      $("#btnLogin").onclick = doLogin;
+      $("#btnLogout").onclick = ()=>location.reload();
+      $("#btnNew").onclick = ()=>openEdit();
+      $("#btnExport").onclick = exportJson;
+      $("#btnSave").onclick = e=>{e.preventDefault(); saveEdit();};
+      $("#filterTeam").onchange = renderList;
+      $("#filterStatus").onchange = renderList;
+      $("#search").oninput = renderList;
+
+      try{
+        const res = await fetch(PATH,{cache:"no-store"});
+        db = await res.json();
+      }catch(err){
+        alert("Kunne ikke indlæse medarbejdere.json");
+        return;
+      }
+
+      db.teams.forEach(t=>{
+        $("#filterTeam").insertAdjacentHTML("beforeend", `<option>${t.name}</option>`);
+        $("#f_team").insertAdjacentHTML("beforeend", `<option>${t.name}</option>`);
+      });
+
+      $("#login").style.display = "grid";
+    })();
+
+    function doLogin(){
+      const master = $("#master").value.trim();
+      const initials = $("#initials").value.trim().toUpperCase();
+      const pin = $("#pin").value.trim();
+
+      if(master !== db.security.masterPassword)
+        return alert("Forkert masterkode");
+
+      const u = db.security.users.find(x=>x.initials.toUpperCase()===initials && x.pin===pin);
+      if(!u) return alert("Forkerte initialer eller PIN");
+
+      currentUser = u;
+      $("#loginUser").textContent = `${u.name} (${u.role})`;
+      $("#login").style.display = "none";
+      $("#app").style.display = "grid";
+      renderList();
+    }
+
+    function renderList(){
+      const list = $("#list");
+      const q = $("#search").value.trim().toLowerCase();
+      const team = $("#filterTeam").value;
+      const status = $("#filterStatus").value;
+
+      const data = db.employees.filter(e=>{
+        if(team && e.team!==team) return false;
+        if(status && e.status!==status) return false;
+        if(q && !(e.navn.toLowerCase().includes(q) || e.initialer.toLowerCase().includes(q))) return false;
+        return true;
+      }).sort((a,b)=>a.navn.localeCompare(b.navn,"da"));
+
+      list.innerHTML = "";
+      data.forEach(e=>{
+        const tag = e.status==="Aktiv" ? "ok" : (e.status==="Opsagt"?"danger":"warn");
+        const fte = e.fte?.erstatning_soegt
+          ? `<span class="tag warn">Erstatning søgt · ID ${e.fte.erstatnings_id||"—"}</span>`
+          : "";
+
+        list.insertAdjacentHTML("beforeend", `
+          <div class="card" data-id="${e.id}">
+            <div style="display:flex; gap:8px; align-items:center;">
+              <strong>${e.navn}</strong>
+              <span class="tag">${e.initialer}</span>
+              <span class="tag ${tag}">${e.status}</span>
+              ${fte}
+            </div>
+            <div class="muted" style="margin-top:6px">${e.team} · ${e.roller||"—"}</div>
+          </div>
+        `);
+      });
+
+      $$(".card",list).forEach(c=>c.onclick=()=>showDetails(c.dataset.id));
+      if(!data.length) list.innerHTML = `<div class="muted">Ingen matches…</div>`;
+    }
+
+    function showDetails(id){
+      current = db.employees.find(x=>x.id===id);
+      if(!current) return;
+      const d = current;
+
+      const historik = (d.historik||[]).slice()
+        .sort((a,b)=>a.dato<b.dato?1:-1)
+        .map(h=>`<li><strong>${h.type}</strong> · ${fmt(h.dato)} – <span class="muted">${h.note||""}</span></li>`)
+        .join("");
+
+      const foto = d.foto_url
+        ? `<img src="${d.foto_url}" style="width:72px;height:72px;object-fit:cover;border-radius:10px;border:1px solid var(--border)" />`
+        : "";
+
+      $("#details").innerHTML = `
+        <div class="grid">
+          <div class="card">
+            <div style="display:flex; gap:12px; align-items:center;">
+              ${foto}
+              <div>
+                <h3 style="margin:0">${d.navn} <span class="tag">${d.initialer}</span></h3>
+                <div class="muted">${d.team}</div>
+                <div class="muted">Status: <strong>${d.status}</strong> · Roller: ${d.roller||"—"}</div>
+              </div>
+            </div>
+
+            <div class="row3" style="margin-top:10px">
+              <div><label>Ansættelsesform</label><div>${d.ansaettelsesform||"—"}</div></div>
+              <div><label>Timer</label><div>${d.kontrakt_timer||"—"}</div></div>
+              <div><label>Kontakt</label><div>${d.kontaktnr||"—"}</div></div>
+            </div>
+
+            <div class="row3">
+              <div><label>Start</label><div>${fmt(d.kontraktstart)}</div></div>
+              <div><label>Udløb</label><div>${fmt(d.kontrakt_udloeb)}</div></div>
+              <div><label>Ny kontrakt</label><div>${d.ny_kontrakt_efter_udloeb||"—"}</div></div>
+            </div>
+
+            <div style="margin-top:8px"><label>Noter</label><div class="muted">${(d.noter||"").replace(/\n/g,"<br>")}</div></div>
+
+            <div class="toolbar" style="margin-top:12px">
+              <button class="btn accent" onclick="openEdit('${d.id}')">Redigér</button>
+              <button class="btn warn" onclick="addHistorik('Erstatning søgt')">+ Historik</button>
+              <button class="btn warn" onclick="markErstatning()">Markér erstatning</button>
+              <button class="btn danger" onclick="deleteEmployee()">Slet</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h4>Historik</h4>
+            <ul style="margin-left:16px">${historik||"<li class='muted'>Ingen historik…</li>"}</ul>
+          </div>
+        </div>`;
+    }
+
+
+    function openEdit(id){
+      const e = id ? db.employees.find(x=>x.id===id) : null;
+      $("#dlgTitle").textContent = e ? "Redigér medarbejder" : "Ny medarbejder";
+
+      $("#f_team").value = e?.team || db.teams[0]?.name;
+      $("#f_status").value = e?.status || "Aktiv";
+      $("#f_enneagram").value = e?.enneagram || "";
+      $("#f_navn").value = e?.navn || "";
+      $("#f_initialer").value = e?.initialer || "";
+      $("#f_roller").value = e?.roller || "";
+      $("#f_form").value = e?.ansaettelsesform || "";
+      $("#f_timer").value = e?.kontrakt_timer || "";
+      $("#f_kontakt").value = e?.kontaktnr || "";
+      $("#f_start").value = e?.kontraktstart || "";
+      $("#f_udloeb").value = e?.kontrakt_udloeb || "";
+      $("#f_nykontrakt").value = e?.ny_kontrakt_efter_udloeb || "";
+      $("#f_foto").value = e?.foto_url || "";
+      $("#f_fte_soegt").value = e?.fte?.erstatning_soegt ? "true" : "false";
+      $("#f_fte_id").value = e?.fte?.erstatnings_id || "";
+      $("#f_noter").value = e?.noter || "";
+
+      $("#dlgEdit").dataset.id = id || "";
+      $("#dlgEdit").showModal();
+    }
+
+    function saveEdit(){
+      const id = $("#dlgEdit").dataset.id || `EMP-${Date.now()}`;
+
+      const obj = {
+        id,
+        team: $("#f_team").value,
+        status: $("#f_status").value,
+        enneagram: $("#f_enneagram").value,
+        navn: $("#f_navn").value,
+        initialer: $("#f_initialer").value,
+        roller: $("#f_roller").value,
+        ansaettelsesform: $("#f_form").value,
+        kontrakt_timer: +$("#f_timer").value || null,
+        kontaktnr: $("#f_kontakt").value,
+        kontraktstart: $("#f_start").value || null,
+        kontrakt_udloeb: $("#f_udloeb").value || null,
+        ny_kontrakt_efter_udloeb: $("#f_nykontrakt").value,
+        foto_url: $("#f_foto").value,
+        noter: $("#f_noter").value,
+        fte: {
+          erstatning_soegt: $("#f_fte_soegt").value==="true",
+          erstatnings_id: $("#f_fte_id").value
+        },
+        historik: []
+      };
+
+      const idx = db.employees.findIndex(x=>x.id===id);
+      if(idx>=0){
+        obj.historik = db.employees[idx].historik;
+        db.employees[idx] = obj;
+      } else {
+        obj.historik.push({dato:new Date().toISOString().slice(0,10), type:"Ansat"});
+        db.employees.push(obj);
+      }
+
+      $("#dlgEdit").close();
+      persist();
+      renderList();
+      showDetails(id);
+    }
+
+    function deleteEmployee(){
+      if(!current) return;
+      if(!confirm("Slet medarbejder?")) return;
+      db.employees = db.employees.filter(x=>x.id!==current.id);
+      persist();
+      $("#details").textContent = "Vælg en medarbejder…";
+      renderList();
+    }
+
+    function addHistorik(type){
+      if(!current) return;
+      current.historik.push({dato:new Date().toISOString().slice(0,10), type});
+      persist();
+      showDetails(current.id);
+    }
+
+    function markErstatning(){
+      if(!current) return;
+      const id = prompt("Angiv erstatnings‑ID:", current.fte?.erstatnings_id||"");
+      current.fte.erstatning_soegt = true;
+      current.fte.erstatnings_id = id||"";
+      addHistorik("Erstatning søgt");
+    }
+
+    function persist(){
+      const blob = new Blob([JSON.stringify(db,null,2)], {type:"application/json"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "medarbejdere.json";
+      a.click();
+    }
+
+    function exportJson(){
+      persist();
+    }
+  </script>
+</body>
+</html>
