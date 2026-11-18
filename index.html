@@ -553,7 +553,7 @@ async function goLive(ident, preUser) {
     const roster = await sb('GET','pladsskema_users',{query:'?select=user_key,name,initials,team_id,is_leader&limit=2000'});
     applyRoster(roster);
     await loadLiveData();
-    currentUser = { id:u.user_key, name:u.name, initials:u.initials, teamId:u.team_id, isLeader:u.is_leader, isLive:true, code:ident.code };
+    currentUser = { id:u.user_key, name:u.name, initials:u.initials, teamId:u.team_id, isLeader:u.is_leader, isAdmin:!!u.is_admin, isLive:true, code:ident.code };
     startApp();
     startPolling();
     return true;
@@ -1477,34 +1477,45 @@ function buildFredagsmorgenmad() {
   return wrap;
 }
 
+let adminViewTeamId = null;
+function adminTeamPicker(selectedId) {
+  const opts = TEAM_CATEGORIES.map(cat => '<optgroup label="'+cat.label+'">' + cat.ids.map(id => {
+    const t = teams.find(x => x.id === id); if(!t) return '';
+    return '<option value="'+t.id+'"'+(t.id===selectedId?' selected':'')+'>'+t.name+'</option>';
+  }).join('') + '</optgroup>').join('');
+  return '<div style="margin-bottom:12px"><label style="font-size:12px;color:#6b7280;font-weight:700">Vælg team (admin)</label><br><select onchange="adminViewTeamId=this.value;renderAdmin()" style="margin-top:4px;padding:8px 10px;border:1.5px solid #d1d5db;border-radius:8px;font-family:inherit;font-size:14px;min-width:220px">'+opts+'</select></div>';
+}
+
 function renderAdmin() {
   const myTeam=teams.find(t=>t.id===currentUser.teamId);
   const body=document.getElementById('adminBody');
   body.innerHTML='';
-  const col=TEAM_COLORS[myTeam.colorIdx];
+  // Admin (fx MSA) kan vælge hvilket team der redigeres; øvrige ledere kun eget
+  const viewTeam=(currentUser.isAdmin && adminViewTeamId && teams.find(t=>t.id===adminViewTeamId)) || myTeam;
+  const col=TEAM_COLORS[viewTeam.colorIdx];
 
   const isDriftMember = teams.find(t=>t.id===currentUser.teamId)?.category==='Drift' && !currentUser.isLeader;
 
   // Team badge - only for leaders
   if(!isDriftMember) {
   const sec1=document.createElement('div'); sec1.className='admin-section';
-  sec1.innerHTML=`<h3>Dit team</h3>
+  sec1.innerHTML=`<h3>${currentUser.isAdmin?'Team':'Dit team'}</h3>${currentUser.isAdmin?adminTeamPicker(viewTeam.id):''}
     <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:${col.bg};border-radius:10px;margin-bottom:14px;flex-wrap:wrap">
       <span style="width:14px;height:14px;border-radius:4px;background:${col.swatch};display:inline-block;flex-shrink:0"></span>
-      <input id="teamNameInput" value="${myTeam.name}" style="font-weight:800;font-size:15px;color:${col.text};background:transparent;border:none;border-bottom:2px solid ${col.swatch};outline:none;padding:2px 4px;flex:1;min-width:120px;font-family:inherit">
-      <button onclick="renameTeam('${myTeam.id}')" style="background:${col.swatch};color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Gem navn</button>
-      <span style="font-size:12px;color:${col.text};opacity:.7">${myTeam.category}</span>
+      <input id="teamNameInput" value="${viewTeam.name}" style="font-weight:800;font-size:15px;color:${col.text};background:transparent;border:none;border-bottom:2px solid ${col.swatch};outline:none;padding:2px 4px;flex:1;min-width:120px;font-family:inherit">
+      <button onclick="renameTeam('${viewTeam.id}')" style="background:${col.swatch};color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">Gem navn</button>
+      <span style="font-size:12px;color:${col.text};opacity:.7">${viewTeam.category}</span>
     </div>`;
   const membersDiv=document.createElement('div'); membersDiv.id='adminMembersDiv';
-  renderMemberPills(membersDiv,myTeam);
+  renderMemberPills(membersDiv,viewTeam);
   sec1.appendChild(membersDiv);
   const addRow=document.createElement('div'); addRow.className='add-member-row';
-  addRow.innerHTML=`<input type="text" id="newMemberInput" placeholder="Navn på ny medarbejder..."><input type="text" id="newMemberInitials" placeholder="Initialer" maxlength="6" style="max-width:110px;text-transform:uppercase"><button onclick="addMember('${myTeam.id}')">Tilføj</button>`;
+  addRow.innerHTML=`<input type="text" id="newMemberInput" placeholder="Navn på ny medarbejder..."><input type="text" id="newMemberInitials" placeholder="Initialer" maxlength="6" style="max-width:110px;text-transform:uppercase"><button onclick="addMember('${viewTeam.id}')">Tilføj</button>`;
   sec1.appendChild(addRow);
   if(currentUser?.isLive && currentUser.isLeader) {
     const bulk=document.createElement('details'); bulk.style.cssText='margin-top:14px;font-size:13px';
     bulk.innerHTML=`<summary style="cursor:pointer;font-weight:700">Indsæt navneliste (mange på én gang)</summary>
-      <p style="color:#6b7280;margin:8px 0">Én linje pr. person: initialer, mellemrum eller tabulator, så fulde navn. Du kan kopiere to kolonner direkte fra Excel. Virker for alle teams.</p>
+      <p style="color:#6b7280;margin:8px 0">Én linje pr. person: initialer, mellemrum eller tabulator, så fulde navn. Du kan kopiere to kolonner direkte fra Excel. ${currentUser.isAdmin?'Virker for alle teams.':'Virker kun for medarbejdere i dit eget team.'}</p>
       <textarea id="bulkNames" rows="8" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1.5px solid #d1d5db;border-radius:8px" placeholder="ANREI&#9;Anders Reimer&#10;ASBGR&#9;Anne Bregnhøj"></textarea>
       <button onclick="saveBulkNames()" style="margin-top:8px;background:#1a1adb;color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Gem navne</button>`;
     sec1.appendChild(bulk);
