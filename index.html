@@ -451,6 +451,53 @@ async function sbAll(table, query) {
   return out;
 }
 
+async function liveRenameMembers(items) {
+  return sb('POST', 'rpc/pladsskema_rename_members', { body: {
+    p_leader: currentUser.initials, p_code: currentUser.code, p_items: items } });
+}
+
+async function refreshLiveAll() {
+  const roster = await sb('GET','pladsskema_users',{query:'?select=user_key,name,initials,team_id,is_leader&limit=2000'});
+  applyRoster(roster);
+  await loadLiveData(false);
+  const me = roster.find(r => r.initials.toUpperCase() === currentUser.initials.toUpperCase());
+  if(me) { currentUser.name = me.name; currentUser.id = me.user_key; }
+  document.getElementById('userName').textContent = currentUser.name;
+  buildLegend(); renderAdmin(); renderCalendar();
+}
+
+function renameResultToast(r) {
+  if(r.status !== 'ok') { showToast('Du har ikke ret til at ændre navne','error'); return false; }
+  const e = (r.errors||[]);
+  if(e.length) showToast(r.renamed+' navne gemt. Fejl: '+e.map(x=>x.initials+' ('+x.fejl.replace(/_/g,' ')+')').slice(0,6).join(', '), 'error');
+  else showToast(r.renamed+(r.renamed===1?' navn gemt':' navne gemt'),'success');
+  return true;
+}
+
+async function renameOneMember(initials, input) {
+  const name = input.value.trim().replace(/\s+/g,' ');
+  if(name.length < 2) { showToast('Skriv et navn','error'); return; }
+  try {
+    const r = await liveRenameMembers([{ initials, name }]);
+    if(renameResultToast(r)) await refreshLiveAll();
+  } catch(e) { showToast('Kunne ikke gemme navn: '+e.message,'error'); }
+}
+
+async function saveBulkNames() {
+  const txt = document.getElementById('bulkNames').value;
+  const items = [];
+  txt.split(/\r?\n/).forEach(line => {
+    line = line.trim(); if(!line) return;
+    const m = line.match(/^(\S+)\s+(.+)$/);
+    if(m) items.push({ initials: m[1].toUpperCase(), name: m[2].trim() });
+  });
+  if(!items.length) { showToast('Indsæt linjer som: INITIALER Fulde Navn','error'); return; }
+  try {
+    const r = await liveRenameMembers(items);
+    if(renameResultToast(r)) { document.getElementById('bulkNames').value=''; await refreshLiveAll(); }
+  } catch(e) { showToast('Kunne ikke gemme navne: '+e.message,'error'); }
+}
+
 async function loadLiveData(partial) {
   const today = new Date(); today.setHours(0,0,0,0);
   const shift = n => { const d = new Date(today); d.setDate(d.getDate()+n); return dateStr(d); };
@@ -1454,6 +1501,14 @@ function renderAdmin() {
   const addRow=document.createElement('div'); addRow.className='add-member-row';
   addRow.innerHTML=`<input type="text" id="newMemberInput" placeholder="Navn på ny medarbejder..."><input type="text" id="newMemberInitials" placeholder="Initialer" maxlength="6" style="max-width:110px;text-transform:uppercase"><button onclick="addMember('${myTeam.id}')">Tilføj</button>`;
   sec1.appendChild(addRow);
+  if(currentUser?.isLive && currentUser.isLeader) {
+    const bulk=document.createElement('details'); bulk.style.cssText='margin-top:14px;font-size:13px';
+    bulk.innerHTML=`<summary style="cursor:pointer;font-weight:700">Indsæt navneliste (mange på én gang)</summary>
+      <p style="color:#6b7280;margin:8px 0">Én linje pr. person: initialer, mellemrum eller tabulator, så fulde navn. Du kan kopiere to kolonner direkte fra Excel. Virker for alle teams.</p>
+      <textarea id="bulkNames" rows="8" style="width:100%;font-family:inherit;font-size:13px;padding:8px;border:1.5px solid #d1d5db;border-radius:8px" placeholder="ANREI&#9;Anders Reimer&#10;ASBGR&#9;Anne Bregnhøj"></textarea>
+      <button onclick="saveBulkNames()" style="margin-top:8px;background:#1a1adb;color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Gem navne</button>`;
+    sec1.appendChild(bulk);
+  }
   body.appendChild(sec1);
   } // end !isDriftMember
 
@@ -1486,8 +1541,25 @@ function renderMemberPills(container,team){
 
     const nameSpan = document.createElement('span');
     nameSpan.style.cssText = 'font-weight:600;font-size:13px;width:160px;flex-shrink:0';
-    nameSpan.textContent = m;
+    const _ini = getInitials(uid, m);
+    nameSpan.textContent = (_ini && _ini.toUpperCase() !== m.toUpperCase()) ? m + ' (' + _ini + ')' : m;
     wrap.appendChild(nameSpan);
+    if(currentUser?.isLive && currentUser.isLeader) {
+      const editBtn = document.createElement('button');
+      editBtn.textContent = '✎'; editBtn.title = 'Ret navn';
+      editBtn.style.cssText = 'border:none;background:transparent;cursor:pointer;font-size:14px;padding:0 4px;color:#6b7280';
+      editBtn.onclick = () => {
+        const inp = document.createElement('input');
+        inp.value = m === _ini ? '' : m; inp.placeholder = 'Fulde navn';
+        inp.style.cssText = 'font-size:13px;padding:3px 6px;border:1.5px solid #d1d5db;border-radius:6px;width:150px;font-family:inherit';
+        const ok = document.createElement('button');
+        ok.textContent = 'Gem'; ok.style.cssText = 'background:#1a1adb;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit';
+        ok.onclick = () => renameOneMember(_ini, inp);
+        inp.onkeydown = ev => { if(ev.key==='Enter') renameOneMember(_ini, inp); };
+        nameSpan.replaceWith(inp); editBtn.replaceWith(ok); inp.focus();
+      };
+      wrap.appendChild(editBtn);
+    }
 
     if(isKS) {
       const allSkills = lunchConfig.ks.skills;
