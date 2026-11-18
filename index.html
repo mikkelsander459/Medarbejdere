@@ -309,6 +309,10 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
   <div class="modal">
     <div class="modal-head"><h2>📅 Book plads</h2><p id="modalDateLabel"></p></div>
     <div class="modal-body">
+      <div id="modalPersonWrap" style="display:none;margin-bottom:10px">
+        <label class="form-label">Medarbejder <span style="font-weight:400;opacity:.7">(egen afdeling)</span></label>
+        <select class="form-select" id="modalPerson"></select>
+      </div>
       <label class="form-label">Lokale</label>
       <select class="form-select" id="modalRoom" onchange="onModalRoomChange()"></select>
       <div id="noteFieldWrap" style="display:none;margin-top:10px">
@@ -320,7 +324,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
         <div><label class="form-label" style="font-size:10px">Start</label><select class="form-select" id="shiftStart"></select></div>
         <div><label class="form-label" style="font-size:10px">Slut</label><select class="form-select" id="shiftEnd"></select></div>
       </div>
-      <p style="font-size:13px;color:var(--text-muted)">Du booker til: <strong id="modalUserName"></strong></p>
+      <p id="modalUserLine" style="font-size:13px;color:var(--text-muted)">Du booker til: <strong id="modalUserName"></strong></p>
     </div>
     <div class="modal-foot">
       <button class="btn btn-secondary" onclick="closeModal()">Annuller</button>
@@ -968,7 +972,7 @@ function renderCalendar() {
         cell.className='cal-cell'+(isToday?' today-col':'')+(isWknd?' weekend':'');
         // Row 0: show add-slot at top if eligible (no booking yet this day for user)
         const alreadyBooked=dayBk.some(b=>b.userId===currentUser.id)||(bookings[ds]?.no_plads||[]).some(b=>b.userId===currentUser.id);
-        const showAdd=!isPast&&!isTooFar&&!alreadyBooked; // isFull removed: no_plads is always available
+        const showAdd=canAddForOthers() ? !isTooFar : (!isPast&&!isTooFar&&!alreadyBooked); // isFull removed: no_plads is always available
         // Existing bookings are offset by 1 row when add-slot is shown
         const bkIndex = showAdd ? row - 1 : row;
         const bk = bkIndex >= 0 ? dayBk[bkIndex] : null;
@@ -990,7 +994,7 @@ function renderCalendar() {
           const npIni=INITIALS_MAP['member_'+npb.name.replace(/\s/g,'_').toLowerCase()]||INITIALS_MAP[npb.userId]||npb.name.split(' ').map(w=>w[0]).join('').substring(0,4).toUpperCase(); nameEl.textContent=npb.name.split(' ')[0]+' ('+npIni+')  🚶';
           chip.appendChild(nameEl);
           if(npb.start&&npb.end){const t=document.createElement('span');t.className='chip-time';t.textContent=npb.start+'–'+npb.end;chip.appendChild(t);}
-          if(canRemoveBookingOf(npb) && (isMe || (!isPast&&!isTooFar))){
+          if(canRemoveOn(npb,ds)){
             const rm=document.createElement('button'); rm.className='chip-remove'; rm.textContent='✕';
             rm.title=isMe?'Fjern registrering':'Fjern '+npb.name;
             rm.onclick=(e)=>{e.stopPropagation();requestRemoveBooking(ds,'no_plads',npb);};
@@ -1019,7 +1023,7 @@ function renderCalendar() {
           const inits=INITIALS_MAP['member_'+bk.name.replace(/\s/g,'_').toLowerCase()]||INITIALS_MAP[bk.userId]||bk.name.split(' ').map(w=>w[0]).join('').substring(0,4).toUpperCase();
           const timeStr=bk.start&&bk.end?`${bk.start}–${bk.end}`:'';
           chip.innerHTML=`<div class="chip-row1"><span class="chip-name">${short}</span><span class="chip-initials">(${inits})</span></div>${timeStr?`<span class="chip-time">${timeStr}</span>`:''}`;
-          if(canRemoveBookingOf(bk)&&!isPast&&!isTooFar){
+          if(canRemoveOn(bk,ds)){
             const rm=document.createElement('button'); rm.className='chip-remove'; rm.textContent='✕';
             rm.title=isMe?'Fjern booking':'Fjern '+bk.name;
             rm.onclick=e=>{e.stopPropagation();requestRemoveBooking(ds,room.id,bk);};
@@ -1070,10 +1074,28 @@ function onModalRoomChange() {
 }
 
 function openBookingModal(ds,roomId) {
+  const forOthers=canAddForOthers();
   const existing=getUserCurrentBooking(ds);
-  if(existing){showToast(`Du har allerede booket plads i ${existing.room.name} denne dag`,'error');return;}
+  if(existing && !forOthers){showToast(`Du har allerede booket plads i ${existing.room.name} denne dag`,'error');return;}
   const d=parseDate(ds);
   modalTarget={ds,roomId};
+  const pw=document.getElementById('modalPersonWrap'), ps=document.getElementById('modalPerson');
+  pw.style.display=forOthers?'':'none';
+  document.getElementById('modalUserLine').style.display=forOthers?'none':'';
+  if(forOthers){
+    ps.innerHTML='';
+    const list=deptUsersForAdd().sort((a,b)=>(a.id===currentUser.id?-1:b.id===currentUser.id?1:0)||a.teamId.localeCompare(b.teamId)||a.name.localeCompare(b.name,'da'));
+    let firstFree=null;
+    list.forEach(u=>{
+      const booked=!!getBookingOf(ds,u.id);
+      const o=document.createElement('option'); o.value=u.id;
+      o.textContent=u.name+' ('+u.initials+')'+(u.id===currentUser.id?' – dig':'')+(booked?' – allerede registreret':'');
+      if(booked) o.disabled=true; else if(!firstFree) firstFree=u.id;
+      ps.appendChild(o);
+    });
+    if(firstFree) ps.value=firstFree;
+    if(!firstFree){showToast('Alle i din afdeling er allerede registreret denne dag','error');pw.style.display='none';return;}
+  }
   document.getElementById('modalDateLabel').textContent=d.toLocaleDateString('da-DK',{weekday:'long',day:'numeric',month:'long'});
   document.getElementById('modalUserName').textContent=currentUser.name;
   const sel=document.getElementById('modalRoom'); sel.innerHTML='';
@@ -1121,38 +1143,53 @@ function getUserWeekBookings(ds) {
   return result;
 }
 
+function getModalPerson(){
+  if(document.getElementById('modalPersonWrap').style.display!=='none'){
+    const id=document.getElementById('modalPerson').value;
+    const u=deptUsersForAdd().find(x=>x.id===id);
+    if(u) return {id:u.id,name:u.name,teamId:u.teamId};
+  }
+  return {id:currentUser.id,name:currentUser.name,teamId:currentUser.teamId};
+}
+
 function confirmBooking() {
+  const person=getModalPerson();
+  const isSelf=person.id===currentUser.id;
   const roomId=document.getElementById('modalRoom').value;
   const ds=modalTarget.ds;
+  const _t0=new Date(); _t0.setHours(0,0,0,0);
+  const isPastDay=parseDate(ds)<_t0;
+  if(isPastDay && !canAddForOthers()){showToast('Du kan ikke registrere bagud i tid','error');closeModal();return;}
+  if(!isSelf && teamCategoryOf(person.teamId)!==teamCategoryOf(currentUser.teamId)){showToast('Du kan kun registrere medarbejdere i din egen afdeling','error');return;}
   const start=document.getElementById('shiftStart').value;
   const end=document.getElementById('shiftEnd').value;
 
   // Handle "Fysisk fremmøde uden plads"
   if(roomId === 'no_plads') {
-    const existing=getUserCurrentBooking(ds);
-    if(existing){showToast('Du har allerede en registrering denne dag','error');closeModal();return;}
+    const existing=getBookingOf(ds,person.id);
+    if(existing){showToast('Der er allerede en registrering denne dag','error');closeModal();return;}
     const note=document.getElementById('noPladsNote').value.trim();
     if(!bookings[ds]) bookings[ds]={};
     if(!bookings[ds]['no_plads']) bookings[ds]['no_plads']=[];
-    const npBk={name:currentUser.name,teamId:currentUser.teamId,userId:currentUser.id,start,end,note};
+    const npBk={name:person.name,teamId:person.teamId,userId:person.id,start,end,note};
     bookings[ds]['no_plads'].push(npBk);
     spSaveBooking(ds,'no_plads',npBk);
     closeModal();
-    showToast('✓ Fysisk fremmøde registreret','success');
+    showToast(isSelf?'✓ Fysisk fremmøde registreret':'✓ Fysisk fremmøde registreret for '+person.name,'success');
     renderCalendar();
     return;
   }
 
   if(start>=end){showToast('Sluttid skal være efter starttid','error');return;}
-  const existing=getUserCurrentBooking(ds);
-  if(existing){showToast('Du har allerede en booking denne dag','error');closeModal();return;}
+  const existing=getBookingOf(ds,person.id);
+  if(existing){showToast('Der er allerede en booking denne dag','error');closeModal();return;}
   const room=ROOMS.find(r=>r.id===roomId);
   if((bookings[ds]?.[room.id]||[]).length>=room.capacity){showToast('Lokalet er desværre fuldt','error');closeModal();return;}
 
   // ── Lokale-regel: 2. booking i samme uge skal være i andet lokale ──
   const d = parseDate(ds);
   const dow = d.getDay();
-  if(dow>=1 && dow<=5){ // kun hverdage
+  if(dow>=1 && dow<=5 && isSelf && !isPastDay){ // kun hverdage, egen fremtidig booking
     const weekBks = getUserWeekBookings(ds);
     if(weekBks.length >= 1){
       // Bruger har allerede 1+ booking denne uge – tjek om de alle er i samme lokale
@@ -1168,22 +1205,46 @@ function confirmBooking() {
   }
   if(!bookings[ds]) bookings[ds]={};
   if(!bookings[ds][roomId]) bookings[ds][roomId]=[];
-  const newBk={name:currentUser.name,teamId:currentUser.teamId,userId:currentUser.id,start,end};
+  const newBk={name:person.name,teamId:person.teamId,userId:person.id,start,end};
   bookings[ds][roomId].push(newBk);
   spSaveBooking(ds,roomId,newBk);
   closeModal();
-  showToast(`✓ Booket ${room.name} ${start}–${end}`,'success');
+  showToast(isSelf?`✓ Booket ${room.name} ${start}–${end}`:`✓ ${person.name} booket i ${room.name} ${start}–${end}`,'success');
   renderCalendar();
 }
 
 // ── Rettigheder til at fjerne andres registreringer ──
 function teamCategoryOf(teamId){ return teams.find(t=>t.id===teamId)?.category; }
-function canRemoveBookingOf(bk){
-  if(bk.userId===currentUser.id) return true;
-  if(currentUser.isAdmin) return true;                       // admin (MSA): alle
+// Har den indloggede "ledelsesret" over denne registrering? (admin, Drift, eller leder i samme afdeling)
+function isPrivilegedOver(bk){
+  if(currentUser.isAdmin) return true;
   const myCat=teamCategoryOf(currentUser.teamId);
-  if(myCat==='Drift') return true;                           // Drift (ledere og medarbejdere): alle
-  return !!currentUser.isLeader && myCat===teamCategoryOf(bk.teamId); // leder: egen afdeling
+  if(myCat==='Drift') return true;
+  return !!currentUser.isLeader && myCat===teamCategoryOf(bk.teamId);
+}
+// Må den indloggede fjerne registreringen på denne dato?
+//  - admin/Drift/egen afdelings leder: alle datoer, også bagud
+//  - øvrige: kun sig selv, og kun i dag og frem
+function canRemoveOn(bk, ds){
+  if(isPrivilegedOver(bk)) return true;
+  if(bk.userId!==currentUser.id) return false;
+  const today=new Date(); today.setHours(0,0,0,0);
+  return parseDate(ds)>=today;
+}
+// Ledere må oprette registreringer for medarbejdere i egen afdeling (også bagud)
+function canAddForOthers(){ return !!currentUser.isLeader; }
+function deptUsersForAdd(){
+  const myCat=teamCategoryOf(currentUser.teamId);
+  return buildDemoUsers().filter(u=>teamCategoryOf(u.teamId)===myCat);
+}
+function getBookingOf(ds,userId){
+  const noP=(bookings[ds]?.no_plads||[]).find(b=>b.userId===userId);
+  if(noP) return {room:{id:'no_plads',name:'Fysisk fremmøde uden plads'},booking:noP};
+  for(const room of ROOMS){
+    const found=(bookings[ds]?.[room.id]||[]).find(b=>b.userId===userId);
+    if(found) return {room,booking:found};
+  }
+  return null;
 }
 
 function confirmDialog(message, okLabel, onOk){
@@ -1209,8 +1270,8 @@ function confirmDialog(message, okLabel, onOk){
 
 function requestRemoveBooking(ds,roomId,bk){
   const doIt=()=> roomId==='no_plads' ? removeNoPlads(ds,bk) : removeBooking(ds,roomId,bk);
-  if(bk.userId===currentUser.id){ doIt(); return; }
-  if(!canRemoveBookingOf(bk)){ showToast('Du har ikke ret til at fjerne denne registrering','error'); return; }
+  if(bk.userId===currentUser.id){ if(!canRemoveOn(bk,ds)){ showToast('Du kan kun fjerne dig selv fra i dag og frem','error'); return; } doIt(); return; }
+  if(!canRemoveOn(bk,ds)){ showToast('Du har ikke ret til at fjerne denne registrering','error'); return; }
   const room=ROOMS.find(r=>r.id===roomId);
   const when=new Date(ds+'T12:00:00').toLocaleDateString('da-DK',{weekday:'long',day:'numeric',month:'long'});
   confirmDialog('Vil du fjerne '+bk.name+' fra '+(room?room.name:'pladsskemaet')+' '+when+'?','Fjern',doIt);
