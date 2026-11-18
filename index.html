@@ -2165,7 +2165,7 @@ function seedDemoBookings() {
       const demoNames={'leder_t0':'Helle Bergstrøm','leder_t1':'Victor Reinhold Hjelm','leder_t2':'Kit Desiré Jensen',
         'leder_t3':'Nicolai Gamsbøll-Havmand','leder_t4':'Mikkel Sander','leder_t5':'David Flenstrøm',
         'leder_t6':'Martin Larsen','leder_t7':'Marianne Hansen'};
-      allUsers.push({name:demoNames[lid]||lid, teamId:t.id, userId:lid, isLeader:true, category:t.category});
+      allUsers.push({name:LEADER_NAMES[lid]||demoNames[lid]||lid, teamId:t.id, userId:lid, isLeader:true, category:t.category});
     });
     t.members.forEach(m=>allUsers.push({name:m, teamId:t.id, userId:'member_'+m.replace(/\s/g,'_').toLowerCase(), isLeader:false, category:t.category}));
   });
@@ -2809,8 +2809,11 @@ function getUserDisplayName(uid) {
     'leder_t3':'Nicolai Gamsbøll-Havmand','leder_t4':'Mikkel Sander','leder_t5':'David Flenstrøm',
     'leder_t6':'Martin Larsen','leder_t7':'Marianne Hansen'
   };
+  if(LEADER_NAMES[uid]) return LEADER_NAMES[uid];
   if(demoNames[uid]) return demoNames[uid];
-  return uid;
+  const u=buildDemoUsers().find(x=>x.id===uid);
+  if(u) return u.name;
+  return uid.replace(/^(leder|member)_/,'').replace(/_/g,' ');
 }
 
 
