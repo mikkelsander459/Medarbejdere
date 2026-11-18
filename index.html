@@ -113,6 +113,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
 .chip-time{font-size:9px;opacity:.92;font-weight:600}
 .chip-remove{position:absolute;right:3px;top:3px;background:rgba(0,0,0,.18);border:none;border-radius:3px;width:14px;height:14px;font-size:9px;cursor:pointer;display:none;align-items:center;justify-content:center;color:inherit;line-height:1;padding:0}
 .booking-chip:hover .chip-remove{display:flex}
+@media (hover:none){.chip-remove{display:flex}}
 .booking-chip.mine{box-shadow:inset 0 0 0 3px #ff6a00, inset 0 0 0 5px #fff;font-weight:800}
 .booking-chip.mine .chip-name::before{content:'★ ';color:#ff6a00;text-shadow:0 0 2px #fff}
 .add-slot{display:flex;align-items:center;justify-content:center;border:1.5px dashed var(--border);border-radius:5px;color:var(--text-muted);font-size:18px;height:28px;cursor:pointer;transition:all .15s}
@@ -989,9 +990,10 @@ function renderCalendar() {
           const npIni=INITIALS_MAP['member_'+npb.name.replace(/\s/g,'_').toLowerCase()]||INITIALS_MAP[npb.userId]||npb.name.split(' ').map(w=>w[0]).join('').substring(0,4).toUpperCase(); nameEl.textContent=npb.name.split(' ')[0]+' ('+npIni+')  🚶';
           chip.appendChild(nameEl);
           if(npb.start&&npb.end){const t=document.createElement('span');t.className='chip-time';t.textContent=npb.start+'–'+npb.end;chip.appendChild(t);}
-          if(isMe){
+          if(canRemoveBookingOf(npb) && (isMe || (!isPast&&!isTooFar))){
             const rm=document.createElement('button'); rm.className='chip-remove'; rm.textContent='✕';
-            rm.onclick=(e)=>{e.stopPropagation();(bookings[ds].no_plads||[]).filter(b=>b.userId===currentUser.id).forEach(b=>{if(b._spId)spDeleteBooking(b._spId);});bookings[ds].no_plads=bookings[ds].no_plads.filter(b=>b.userId!==currentUser.id);renderCalendar();showToast('Registrering fjernet','info');};
+            rm.title=isMe?'Fjern registrering':'Fjern '+npb.name;
+            rm.onclick=(e)=>{e.stopPropagation();requestRemoveBooking(ds,'no_plads',npb);};
             chip.appendChild(rm);
           }
           cell.appendChild(chip);
@@ -1017,10 +1019,10 @@ function renderCalendar() {
           const inits=INITIALS_MAP['member_'+bk.name.replace(/\s/g,'_').toLowerCase()]||INITIALS_MAP[bk.userId]||bk.name.split(' ').map(w=>w[0]).join('').substring(0,4).toUpperCase();
           const timeStr=bk.start&&bk.end?`${bk.start}–${bk.end}`:'';
           chip.innerHTML=`<div class="chip-row1"><span class="chip-name">${short}</span><span class="chip-initials">(${inits})</span></div>${timeStr?`<span class="chip-time">${timeStr}</span>`:''}`;
-          if(isMe&&!isPast&&!isTooFar){
+          if(canRemoveBookingOf(bk)&&!isPast&&!isTooFar){
             const rm=document.createElement('button'); rm.className='chip-remove'; rm.textContent='✕';
-            rm.title='Fjern booking';
-            rm.onclick=e=>{e.stopPropagation();removeBooking(ds,room.id,bk);};
+            rm.title=isMe?'Fjern booking':'Fjern '+bk.name;
+            rm.onclick=e=>{e.stopPropagation();requestRemoveBooking(ds,room.id,bk);};
             chip.appendChild(rm);
           }
           cell.appendChild(chip);
@@ -1171,6 +1173,54 @@ function confirmBooking() {
   spSaveBooking(ds,roomId,newBk);
   closeModal();
   showToast(`✓ Booket ${room.name} ${start}–${end}`,'success');
+  renderCalendar();
+}
+
+// ── Rettigheder til at fjerne andres registreringer ──
+function teamCategoryOf(teamId){ return teams.find(t=>t.id===teamId)?.category; }
+function canRemoveBookingOf(bk){
+  if(bk.userId===currentUser.id) return true;
+  if(currentUser.isAdmin) return true;                       // admin (MSA): alle
+  const myCat=teamCategoryOf(currentUser.teamId);
+  if(myCat==='Drift') return true;                           // Drift (ledere og medarbejdere): alle
+  return !!currentUser.isLeader && myCat===teamCategoryOf(bk.teamId); // leder: egen afdeling
+}
+
+function confirmDialog(message, okLabel, onOk){
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=document.createElement('div');
+  box.style.cssText='background:#fff;border-radius:14px;max-width:380px;width:100%;padding:22px 22px 18px;box-shadow:0 20px 50px rgba(0,0,0,.35);font-family:inherit';
+  const h=document.createElement('div'); h.textContent='Bekræft'; h.style.cssText='font-weight:800;font-size:17px;margin-bottom:8px';
+  const m=document.createElement('div'); m.textContent=message; m.style.cssText='font-size:14px;line-height:1.45;color:#374151;margin-bottom:18px';
+  const row=document.createElement('div'); row.style.cssText='display:flex;gap:10px;justify-content:flex-end';
+  const no=document.createElement('button'); no.textContent='Annuller';
+  no.style.cssText='padding:9px 16px;border:1.5px solid #d1d5db;background:#fff;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit';
+  const ok=document.createElement('button'); ok.textContent=okLabel||'OK';
+  ok.style.cssText='padding:9px 16px;border:none;background:#dc2626;color:#fff;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;font-family:inherit';
+  const close=()=>{ ov.remove(); document.removeEventListener('keydown',onKey); };
+  const onKey=e=>{ if(e.key==='Escape') close(); };
+  no.onclick=close; ok.onclick=()=>{ close(); onOk(); };
+  ov.onclick=e=>{ if(e.target===ov) close(); };
+  document.addEventListener('keydown',onKey);
+  row.append(no,ok); box.append(h,m,row); ov.appendChild(box); document.body.appendChild(ov);
+  ok.focus();
+}
+
+function requestRemoveBooking(ds,roomId,bk){
+  const doIt=()=> roomId==='no_plads' ? removeNoPlads(ds,bk) : removeBooking(ds,roomId,bk);
+  if(bk.userId===currentUser.id){ doIt(); return; }
+  if(!canRemoveBookingOf(bk)){ showToast('Du har ikke ret til at fjerne denne registrering','error'); return; }
+  const room=ROOMS.find(r=>r.id===roomId);
+  const when=new Date(ds+'T12:00:00').toLocaleDateString('da-DK',{weekday:'long',day:'numeric',month:'long'});
+  confirmDialog('Vil du fjerne '+bk.name+' fra '+(room?room.name:'pladsskemaet')+' '+when+'?','Fjern',doIt);
+}
+
+function removeNoPlads(ds,bk){
+  const list=bookings[ds]?.no_plads||[];
+  const idx=list.findIndex(b=>b.userId===bk.userId);
+  if(idx>=0){ const removed=list.splice(idx,1)[0]; if(removed?._spId) spDeleteBooking(removed._spId); }
+  showToast('Registrering fjernet','info');
   renderCalendar();
 }
 
