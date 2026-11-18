@@ -285,10 +285,16 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
   <div id="viewHistory" style="display:none">
     <div class="hist-controls">
       <label>Team:</label>
-      <select id="histTeamSel" onchange="renderHistory()"></select>
-      <label style="margin-left:12px">Periode:</label>
+      <select id="histTeamSel" onchange="onHistTeamChange()"></select>
+      <label>Person:</label>
+      <select id="histPersonSel" onchange="renderHistory()"></select>
+      <label>Visning:</label>
+      <select id="histMode" onchange="renderHistory()"></select>
+      <label>Periode:</label>
       <select id="histPeriod" onchange="renderHistory()">
+        <option value="all">Alt (siden første registrering)</option>
         <option value="year">Hele indeværende år</option>
+        <option value="26">Seneste 26 uger</option>
         <option value="12" selected>Seneste 12 uger</option>
         <option value="6">Seneste 6 uger</option>
         <option value="3">Seneste 3 uger</option>
@@ -1303,47 +1309,187 @@ function getWeekMonday(weeksAgo) {
   return mon;
 }
 
-function getVisibleTeamIds() {
-  // Drift sees all teams
-  const myTeam=teams.find(t=>t.id===currentUser.teamId);
-  if(!myTeam) return teams.map(t=>t.id);
-  if(myTeam.category==='Drift') return teams.map(t=>t.id);
-  // Others see teams in same category
-  return teams.filter(t=>t.category===myTeam.category).map(t=>t.id);
-}
+const HIST_ROOMS = ['basen','netvaerket','skyen','no_plads'];
+const HIST_ROOM_NAME = { basen:'Basen', netvaerket:'Netværket', skyen:'Skyen', no_plads:'Uden plads' };
+const HIST_ROOM_COLOR = { basen:'#f59e0b', netvaerket:'#2563eb', skyen:'#10b981', no_plads:'#9ca3af' };
+
+// Rettigheder: medarbejdere ser kun sig selv, ledere (også Drift) eget team, admin alle teams
+function histCanSeeTeam() { return !!currentUser.isLeader || !!currentUser.isAdmin; }
 
 function populateHistTeamSelect() {
   const sel=document.getElementById('histTeamSel');
   sel.innerHTML='';
-  sel.disabled=false;
-
-  if(!currentUser.isLeader) {
-    // Regular members: see only themselves → no team selector needed, handled in renderHistory
-    const myTeam=teams.find(t=>t.id===currentUser.teamId);
+  const myTeam=teams.find(t=>t.id===currentUser.teamId);
+  if(currentUser.isAdmin) {
+    sel.disabled=false;
+    sel.innerHTML='<option value="ALL">Alle teams</option>';
+    TEAM_CATEGORIES.forEach(cat=>{
+      const og=document.createElement('optgroup'); og.label=cat.label;
+      cat.ids.forEach(id=>{ const t=teams.find(x=>x.id===id); if(!t) return;
+        const o=document.createElement('option'); o.value=t.id; o.textContent=t.name; og.appendChild(o); });
+      sel.appendChild(og);
+    });
+    sel.value=currentUser.teamId;
+  } else {
     sel.innerHTML=`<option value="${myTeam.id}">${myTeam.name}</option>`;
     sel.disabled=true;
-    return;
+  }
+  sel.dataset.user=currentUser.id;
+  populateHistPersonSelect();
+}
+
+function histTeamUsers(teamId) {
+  return buildDemoUsers().filter(u=>u.teamId===teamId)
+    .sort((a,b)=>(b.isLeader-a.isLeader)||a.name.localeCompare(b.name,'da'));
+}
+
+function populateHistPersonSelect() {
+  const teamId=document.getElementById('histTeamSel').value;
+  const ps=document.getElementById('histPersonSel');
+  ps.innerHTML='';
+  if(!histCanSeeTeam()) {
+    ps.innerHTML=`<option value="${currentUser.id}">${currentUser.name}</option>`; ps.disabled=true;
+  } else if(teamId==='ALL') {
+    ps.innerHTML='<option value="*">Alle</option>'; ps.disabled=true;
+  } else {
+    ps.disabled=false;
+    ps.innerHTML='<option value="*">Hele teamet</option>';
+    histTeamUsers(teamId).forEach(u=>{
+      const o=document.createElement('option'); o.value=u.id;
+      o.textContent=(u.isLeader?'[TL] ':'')+u.name+(u.initials&&u.initials.toUpperCase()!==u.name.toUpperCase()?' ('+u.initials+')':''); ps.appendChild(o);
+    });
+  }
+  populateHistModeSelect();
+}
+
+function populateHistModeSelect() {
+  const teamId=document.getElementById('histTeamSel').value;
+  const ms=document.getElementById('histMode');
+  const prev=ms.value;
+  let opts;
+  if(!histCanSeeTeam()) opts=[['weekly','Lokalefordeling pr. uge'],['matrix','Fremmøde pr. uge (dage)']];
+  else if(teamId==='ALL') opts=[['weekly','Lokalefordeling pr. uge'],['byteam','Samlet pr. team']];
+  else opts=[['weekly','Lokalefordeling pr. uge'],['byperson','Samlet pr. medarbejder'],['matrix','Fremmøde pr. uge (dage)']];
+  ms.innerHTML=opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('');
+  if(opts.some(o=>o[0]===prev)) ms.value=prev;
+}
+
+function onHistTeamChange() { populateHistPersonSelect(); renderHistory(); }
+
+// Valgte personer ud fra rettigheder og valg
+function histSelectedUsers() {
+  if(!histCanSeeTeam()) return [{id:currentUser.id,name:currentUser.name,teamId:currentUser.teamId,isLeader:!!currentUser.isLeader}];
+  const teamId=document.getElementById('histTeamSel').value;
+  const person=document.getElementById('histPersonSel').value;
+  const all=buildDemoUsers();
+  if(teamId!=='ALL' && !currentUser.isAdmin && teamId!==currentUser.teamId) return []; // sikkerhedsnet
+  let users = teamId==='ALL' ? all : all.filter(u=>u.teamId===teamId);
+  if(person && person!=='*') users=users.filter(u=>u.id===person);
+  return users;
+}
+
+function histWeekRange(periodVal) {
+  if(periodVal==='all') {
+    const keys=Object.keys(bookings).filter(k=>Object.values(bookings[k]).some(l=>l.length)).sort();
+    const todayMon=getMonday(new Date());
+    const first=keys.length?getMonday(parseDate(keys[0])):todayMon;
+    const weeks=[];
+    for(let m=new Date(first); m<=todayMon; m.setDate(m.getDate()+7)) weeks.push({mon:new Date(m),wn:getWeekNumber(m)});
+    return weeks;
+  }
+  return buildWeeks(periodVal);
+}
+
+// Tæl dage pr. lokale for et sæt personer i en uge (kun til og med i dag)
+function histCountWeek(idSet, mon) {
+  const row={basen:0,netvaerket:0,skyen:0,no_plads:0,total:0};
+  const today=new Date(); today.setHours(0,0,0,0);
+  for(let i=0;i<7;i++){
+    const d=new Date(mon); d.setDate(d.getDate()+i);
+    if(d>today) break;
+    const day=bookings[dateStr(d)]; if(!day) continue;
+    HIST_ROOMS.forEach(r=>{ (day[r]||[]).forEach(bk=>{ if(idSet.has(bk.userId)){ row[r]++; row.total++; } }); });
+  }
+  return row;
+}
+
+function histBar(row) {
+  if(!row.total) return '<span style="color:var(--text-muted);font-size:12px">–</span>';
+  return '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;min-width:140px;background:#e5e7eb">'+
+    HIST_ROOMS.filter(r=>row[r]).map(r=>`<div title="${HIST_ROOM_NAME[r]}: ${row[r]} (${Math.round(row[r]/row.total*100)}%)" style="width:${row[r]/row.total*100}%;background:${HIST_ROOM_COLOR[r]}"></div>`).join('')+'</div>';
+}
+function histLegend() {
+  return '<div style="display:flex;gap:14px;flex-wrap:wrap;margin:0 0 12px;font-size:12px;color:var(--text-muted)">'+
+    HIST_ROOMS.map(r=>`<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:${HIST_ROOM_COLOR[r]};display:inline-block"></span>${HIST_ROOM_NAME[r]}</span>`).join('')+'</div>';
+}
+function histTiles(tot) {
+  const tile=(label,val,color)=>`<div style="flex:1;min-width:110px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:12px 14px;border-top:4px solid ${color}">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">${label}</div>
+    <div style="font-size:24px;font-weight:800">${val}</div>
+    <div style="font-size:12px;color:var(--text-muted)">${tot.total?Math.round(val/tot.total*100):0}% af dage</div></div>`;
+  return '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">'+
+    HIST_ROOMS.map(r=>tile(HIST_ROOM_NAME[r],tot[r],HIST_ROOM_COLOR[r])).join('')+
+    `<div style="flex:1;min-width:110px;background:var(--navy);color:#fff;border-radius:12px;padding:12px 14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;opacity:.8">I alt</div><div style="font-size:24px;font-weight:800">${tot.total}</div><div style="font-size:12px;opacity:.8">fremmødedage</div></div></div>`;
+}
+function histSumRows(rows) {
+  const t={basen:0,netvaerket:0,skyen:0,no_plads:0,total:0};
+  rows.forEach(r=>{HIST_ROOMS.forEach(k=>t[k]+=r[k]); t.total+=r.total;});
+  return t;
+}
+function histRoomCells(row) {
+  return HIST_ROOMS.map(r=>`<td style="text-align:center;font-weight:${row[r]?700:400};color:${row[r]?'inherit':'#c0c4cc'}">${row[r]||'–'}</td>`).join('')+
+    `<td style="text-align:center;font-weight:800">${row.total}</td><td>${histBar(row)}</td>`;
+}
+function histHead(first) {
+  return `<table class="hist-table"><thead><tr>${first}${HIST_ROOMS.map(r=>`<th style="text-align:center"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${HIST_ROOM_COLOR[r]};margin-right:5px"></span>${HIST_ROOM_NAME[r]}</th>`).join('')}<th style="text-align:center">I alt</th><th>Fordeling</th></tr></thead><tbody>`;
+}
+
+function renderHistory() {
+  const tsel=document.getElementById('histTeamSel');
+  if(tsel.dataset.user!==currentUser.id) populateHistTeamSelect();
+  const mode=document.getElementById('histMode').value;
+  const periodVal=document.getElementById('histPeriod').value;
+  const content=document.getElementById('histContent');
+  const users=histSelectedUsers();
+  const teamId=tsel.value;
+  const weeks=histWeekRange(periodVal);
+  const todayMon=getMonday(new Date());
+  if(!users.length){ content.innerHTML='<p style="color:var(--text-muted)">Ingen medarbejdere at vise.</p>'; return; }
+  const ids=new Set(users.map(u=>u.id));
+
+  if(mode==='matrix') { renderHistoryMatrix(teamId, users, periodVal); return; }
+
+  if(mode==='byperson' || mode==='byteam') {
+    const groups = mode==='byteam'
+      ? teams.map(t=>({label:t.name, color:TEAM_COLORS[t.colorIdx], ids:new Set(users.filter(u=>u.teamId===t.id).map(u=>u.id))}))
+      : users.map(u=>({label:(u.isLeader?'[TL] ':'')+u.name, color:null, ids:new Set([u.id])}));
+    const rows=groups.map(g=>{
+      const tot={basen:0,netvaerket:0,skyen:0,no_plads:0,total:0};
+      weeks.forEach(w=>{const r=histCountWeek(g.ids,w.mon);HIST_ROOMS.forEach(k=>tot[k]+=r[k]);tot.total+=r.total;});
+      return {g,tot};
+    });
+    const all=histSumRows(rows.map(r=>r.tot));
+    let html=histTiles(all)+histLegend()+histHead(`<th style="position:sticky;left:0;background:var(--navy);z-index:2">${mode==='byteam'?'Team':'Medarbejder'}</th>`);
+    rows.forEach(({g,tot})=>{
+      const badge=g.color?`<span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${g.color.swatch};margin-right:7px"></span>`:'';
+      html+=`<tr><td class="member-name-cell" style="position:sticky;left:0;background:#fff;z-index:1">${badge}${g.label}</td>${histRoomCells(tot)}</tr>`;
+    });
+    html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Tæller registrerede dage til og med i dag i den valgte periode.</p>`;
+    content.innerHTML=html; return;
   }
 
-  // Leaders: see teams based on category rules
-  const visibleIds=getVisibleTeamIds();
-  const visibleTeams=teams.filter(t=>visibleIds.includes(t.id));
-
-  // Group by category
-  const byCategory={};
-  visibleTeams.forEach(t=>{
-    if(!byCategory[t.category]) byCategory[t.category]=[];
-    byCategory[t.category].push(t);
+  // Lokalefordeling pr. uge (nyeste øverst)
+  const rows=weeks.map(w=>{ const r=histCountWeek(ids,w.mon); r.wn=w.wn; r.mon=w.mon; r.future=w.mon>todayMon; return r; });
+  const all=histSumRows(rows);
+  const who = users.length===1 ? users[0].name : (teamId==='ALL' ? 'Alle teams' : (teams.find(t=>t.id===teamId)?.name||'')+' ('+users.length+' personer)');
+  let html=`<div style="font-size:15px;font-weight:800;margin-bottom:10px">${who}</div>`+histTiles(all)+histLegend()+histHead('<th>Uge</th><th>Periode</th>');
+  rows.slice().reverse().forEach(r=>{
+    const end=new Date(r.mon); end.setDate(end.getDate()+6);
+    const fmt=d=>d.toLocaleDateString('da-DK',{day:'numeric',month:'short'});
+    html+=`<tr><td style="font-weight:700">U${r.wn}</td><td style="color:var(--text-muted);white-space:nowrap">${fmt(r.mon)} – ${fmt(end)}</td>${histRoomCells(r)}</tr>`;
   });
-
-  Object.entries(byCategory).forEach(([cat,tms])=>{
-    const og=document.createElement('optgroup'); og.label=cat;
-    tms.forEach(t=>{
-      const o=document.createElement('option'); o.value=t.id; o.textContent=t.name; og.appendChild(o);
-    });
-    sel.appendChild(og);
-  });
-  sel.value=currentUser.teamId;
+  html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Tæller registrerede dage til og med i dag. Den igangværende uge er derfor ikke færdig.</p>`;
+  content.innerHTML=html;
 }
 
 function getMemberWeekDays(userId, mondayDate) {
@@ -1412,29 +1558,13 @@ function buildWeeks(periodVal) {
   return weeks;
 }
 
-function renderHistory() {
-  const teamId = document.getElementById('histTeamSel').value;
-  const periodVal = document.getElementById('histPeriod').value;
-  const team = teams.find(t => t.id === teamId);
+function renderHistoryMatrix(teamId, users, periodVal) {
+  const team = teams.find(t => t.id === (teamId==='ALL' ? currentUser.teamId : teamId));
   if (!team) return;
   const col = TEAM_COLORS[team.colorIdx];
   const todayMon = getMonday(new Date());
-  const weeks = buildWeeks(periodVal);
-
-  // Determine which members to show
-  let membersToShow;
-  if (!currentUser.isLeader) {
-    // Regular member: only show themselves
-    membersToShow = [{ name: currentUser.name, userId: currentUser.id }];
-  } else {
-    // Leader: show themselves first, then their team members
-    const leaderEntry = { name: currentUser.name, userId: currentUser.id };
-    const memberEntries = team.members.map(name => ({
-      name,
-      userId: 'member_' + name.replace(/\s/g, '_').toLowerCase()
-    }));
-    membersToShow = [leaderEntry, ...memberEntries];
-  }
+  const weeks = histWeekRange(periodVal);
+  const membersToShow = users.map(u => ({ name: u.name, userId: u.id }));
 
   const memberData = membersToShow.map(({ name, userId }) => {
     let totalDays = 0, pastCount = 0;
