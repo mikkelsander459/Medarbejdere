@@ -113,7 +113,8 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
 .chip-time{font-size:9px;opacity:.92;font-weight:600}
 .chip-remove{position:absolute;right:3px;top:3px;background:rgba(0,0,0,.18);border:none;border-radius:3px;width:14px;height:14px;font-size:9px;cursor:pointer;display:none;align-items:center;justify-content:center;color:inherit;line-height:1;padding:0}
 .booking-chip:hover .chip-remove{display:flex}
-.booking-chip.mine{outline:2px solid currentColor;outline-offset:-2px}
+.booking-chip.mine{box-shadow:inset 0 0 0 3px #ff6a00, inset 0 0 0 5px #fff;font-weight:800}
+.booking-chip.mine .chip-name::before{content:'★ ';color:#ff6a00;text-shadow:0 0 2px #fff}
 .add-slot{display:flex;align-items:center;justify-content:center;border:1.5px dashed var(--border);border-radius:5px;color:var(--text-muted);font-size:18px;height:28px;cursor:pointer;transition:all .15s}
 .add-slot:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-light)}
 
@@ -629,8 +630,8 @@ async function spSaveLunchConfig(ds, section, cfg) {
 // DATA
 // ═══════════════════════
 const ROOMS = [
-  { id:'netvaerket', name:'Netværket', icon:'🌐', capacity:32 },
   { id:'basen',      name:'Basen',     icon:'🏠', capacity:34 },
+  { id:'netvaerket', name:'Netværket', icon:'🌐', capacity:32 },
   { id:'skyen',      name:'Skyen',     icon:'☁️',  capacity:24 },
 ];
 
@@ -990,7 +991,7 @@ function renderCalendar() {
           if(npb.start&&npb.end){const t=document.createElement('span');t.className='chip-time';t.textContent=npb.start+'–'+npb.end;chip.appendChild(t);}
           if(isMe){
             const rm=document.createElement('button'); rm.className='chip-remove'; rm.textContent='✕';
-            rm.onclick=(e)=>{e.stopPropagation();bookings[ds].no_plads=bookings[ds].no_plads.filter(b=>b.userId!==currentUser.id);renderCalendar();showToast('Registrering fjernet','info');};
+            rm.onclick=(e)=>{e.stopPropagation();(bookings[ds].no_plads||[]).filter(b=>b.userId===currentUser.id).forEach(b=>{if(b._spId)spDeleteBooking(b._spId);});bookings[ds].no_plads=bookings[ds].no_plads.filter(b=>b.userId!==currentUser.id);renderCalendar();showToast('Registrering fjernet','info');};
             chip.appendChild(rm);
           }
           cell.appendChild(chip);
