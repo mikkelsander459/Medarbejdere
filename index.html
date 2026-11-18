@@ -440,18 +440,31 @@ async function liveRemoveMember(name) {
   } catch(e) { showToast('Kunne ikke fjerne medarbejder: ' + e.message, 'error'); }
 }
 
-async function loadLiveData() {
+async function sbAll(table, query) {
+  // Henter alle rækker i sider (serveren returnerer højst 1000 pr. kald)
+  const out = [];
+  for(let off = 0; ; off += 1000) {
+    const page = await sb('GET', table, { query: query + '&order=id.asc&limit=1000&offset=' + off });
+    out.push(...page);
+    if(page.length < 1000) break;
+  }
+  return out;
+}
+
+async function loadLiveData(partial) {
   const today = new Date(); today.setHours(0,0,0,0);
-  const from = new Date(today); from.setDate(from.getDate()-42);
-  const to = new Date(today); to.setDate(to.getDate()+42);
-  const lf = new Date(today); lf.setDate(lf.getDate()-14);
-  const lt = new Date(today); lt.setDate(lt.getDate()+14);
+  const shift = n => { const d = new Date(today); d.setDate(d.getDate()+n); return dateStr(d); };
+  // Første indlæsning: hele historikken. Opdatering hvert 30. sek.: kun nære datoer.
+  const bf = partial ? shift(-7) : shift(-450), bt = partial ? shift(60) : shift(180);
+  const lf = shift(-14), lt = shift(14);
   const [bk, fb, cfg] = await Promise.all([
-    sb('GET','pladsskema_bookings',{query:`?select=*&date_str=gte.${dateStr(from)}&date_str=lte.${dateStr(to)}&limit=10000`}),
-    sb('GET','pladsskema_lunch_bookings',{query:`?select=*&date_str=gte.${dateStr(lf)}&date_str=lte.${dateStr(lt)}&limit=10000`}),
-    sb('GET','pladsskema_lunch_config',{query:`?select=*&date_str=gte.${dateStr(lf)}&date_str=lte.${dateStr(lt)}`})
+    sbAll('pladsskema_bookings', `?select=*&date_str=gte.${bf}&date_str=lte.${bt}`),
+    sbAll('pladsskema_lunch_bookings', `?select=*&date_str=gte.${lf}&date_str=lte.${lt}`),
+    sb('GET', 'pladsskema_lunch_config', { query: `?select=*&date_str=gte.${lf}&date_str=lte.${lt}` })
   ]);
-  bookings = {};
+  if(partial) {
+    Object.keys(bookings).forEach(ds => { if(ds >= bf && ds <= bt) delete bookings[ds]; });
+  } else bookings = {};
   bk.forEach(f => {
     if(!bookings[f.date_str]) bookings[f.date_str] = {};
     if(!bookings[f.date_str][f.room_id]) bookings[f.date_str][f.room_id] = [];
@@ -512,7 +525,7 @@ function startPolling() {
     try {
       const roster = await sb('GET','pladsskema_users',{query:'?select=user_key,name,initials,team_id,is_leader&limit=2000'});
       applyRoster(roster);
-      await loadLiveData();
+      await loadLiveData(true);
       if(currentView==='calendar') renderCalendar();
       else if(currentView==='lunch') renderLunch();
       else if(currentView==='history') renderHistory();
