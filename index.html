@@ -2752,16 +2752,6 @@ function renderKSLunch(ds, slots) {
     if(isDriftUser) html += '<td style="border-bottom:1px solid var(--border)"></td>';
     html += '</tr>';
 
-    // Member list for this skill
-    const skillHolders = [];
-    ksTeams.forEach(t=>[...t.leaders,...t.members].forEach(m=>{
-      const isLdr=typeof m==='string'&&m.startsWith('leder_');
-      const uid=isLdr?m:'member_'+m.replace(/\s/g,'_').toLowerCase();
-      if(getMemberSkills(uid).includes(skill)) skillHolders.push(isLdr?getUserDisplayName(m):m);
-    }));
-    if(skillHolders.length) {
-      html += '<tr><td colspan="'+(slots.length+1+(isDriftUser?1:0))+'" style="padding:3px 12px 6px;font-size:10px;color:#6b7280;font-style:italic">'+skillHolders.join(', ')+'</td></tr>';
-    }
   });
   html += '</tbody></table></div></div>';
   return html;
