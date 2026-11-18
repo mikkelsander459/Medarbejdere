@@ -287,7 +287,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
       <label>Team:</label>
       <select id="histTeamSel" onchange="onHistTeamChange()"></select>
       <label>Person:</label>
-      <select id="histPersonSel" onchange="renderHistory()"></select>
+      <select id="histPersonSel" onchange="onHistPersonChange()"></select>
       <label>Visning:</label>
       <select id="histMode" onchange="renderHistory()"></select>
       <label>Periode:</label>
@@ -516,11 +516,13 @@ async function loadLiveData(partial) {
   // Første indlæsning: hele historikken. Opdatering hvert 30. sek.: kun nære datoer.
   const bf = partial ? shift(-7) : shift(-450), bt = partial ? shift(60) : shift(180);
   const lf = shift(-14), lt = shift(14);
-  const [bk, fb, cfg] = await Promise.all([
+  const [bk, fb, cfg, gr] = await Promise.all([
     sbAll('pladsskema_bookings', `?select=*&date_str=gte.${bf}&date_str=lte.${bt}`),
     sbAll('pladsskema_lunch_bookings', `?select=*&date_str=gte.${lf}&date_str=lte.${lt}`),
-    sb('GET', 'pladsskema_lunch_config', { query: `?select=*&date_str=gte.${lf}&date_str=lte.${lt}` })
+    sb('GET', 'pladsskema_lunch_config', { query: `?select=*&date_str=gte.${lf}&date_str=lte.${lt}` }),
+    sb('GET', 'pladsskema_grace', { query: '?select=*&limit=2000' }).catch(() => null)
   ]);
+  if(gr) graces = gr.map(g => ({ id: g.id, userId: g.user_key, from: g.from_week, to: g.to_week }));
   if(partial) {
     Object.keys(bookings).forEach(ds => { if(ds >= bf && ds <= bt) delete bookings[ds]; });
   } else bookings = {};
@@ -684,6 +686,7 @@ let teams = [
 
 // bookings[dateStr][roomId] = [{name,teamId,userId,start,end}]
 let bookings = {};
+let graces = []; // [{id,userId,from,to}] – from/to = mandage (YYYY-MM-DD), begge inklusive
 let _demoSeeded = false;
 let currentUser = null;
 let currentWeekStart = null;
@@ -1335,6 +1338,7 @@ function populateHistTeamSelect() {
     sel.disabled=true;
   }
   sel.dataset.user=currentUser.id;
+  document.getElementById('histMode').innerHTML=''; // ny bruger: start på standardvisning
   populateHistPersonSelect();
 }
 
@@ -1367,14 +1371,22 @@ function populateHistModeSelect() {
   const ms=document.getElementById('histMode');
   const prev=ms.value;
   let opts;
-  if(!histCanSeeTeam()) opts=[['weekly','Lokalefordeling pr. uge'],['matrix','Fremmøde pr. uge (dage)']];
-  else if(teamId==='ALL') opts=[['weekly','Lokalefordeling pr. uge'],['byteam','Samlet pr. team']];
-  else opts=[['weekly','Lokalefordeling pr. uge'],['byperson','Samlet pr. medarbejder'],['matrix','Fremmøde pr. uge (dage)']];
+  if(!histCanSeeTeam()) opts=[['weekly','Fremmøde og lokalefordeling pr. uge']];
+  else if(teamId==='ALL') opts=[['byteam','Samlet pr. team'],['weekly','Lokalefordeling pr. uge']];
+  else opts=[['byperson','Samlet pr. medarbejder'],['weekly','Lokalefordeling pr. uge'],['matrix','Fremmøde pr. uge (dage)']];
   ms.innerHTML=opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('');
   if(opts.some(o=>o[0]===prev)) ms.value=prev;
+  ms.style.display = opts.length>1 ? '' : 'none';
 }
 
 function onHistTeamChange() { populateHistPersonSelect(); renderHistory(); }
+function onHistPersonChange() {
+  // Vælges én person i oversigten, vises ugefordelingen for personen
+  const ms=document.getElementById('histMode'), ps=document.getElementById('histPersonSel');
+  if(ps.value!=='*' && ms.value==='byperson') ms.value='weekly';
+  else if(ps.value==='*' && ms.value==='weekly' && [...ms.options].some(o=>o.value==='byperson')) ms.value='byperson';
+  renderHistory();
+}
 
 // Valgte personer ud fra rettigheder og valg
 function histSelectedUsers() {
@@ -1440,8 +1452,79 @@ function histRoomCells(row) {
   return HIST_ROOMS.map(r=>`<td style="text-align:center;font-weight:${row[r]?700:400};color:${row[r]?'inherit':'#c0c4cc'}">${row[r]||'–'}</td>`).join('')+
     `<td style="text-align:center;font-weight:800">${row.total}</td><td>${histBar(row)}</td>`;
 }
-function histHead(first) {
-  return `<table class="hist-table"><thead><tr>${first}${HIST_ROOMS.map(r=>`<th style="text-align:center"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${HIST_ROOM_COLOR[r]};margin-right:5px"></span>${HIST_ROOM_NAME[r]}</th>`).join('')}<th style="text-align:center">I alt</th><th>Fordeling</th></tr></thead><tbody>`;
+function histHead(first, extraHeads) {
+  return `<table class="hist-table"><thead><tr>${first}${extraHeads||''}${HIST_ROOMS.map(r=>`<th style="text-align:center"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${HIST_ROOM_COLOR[r]};margin-right:5px"></span>${HIST_ROOM_NAME[r]}</th>`).join('')}<th style="text-align:center">I alt</th><th>Fordeling</th></tr></thead><tbody>`;
+}
+
+// ── Fremmødekrav og saldo ──
+const HIST_REQ = 2; // dage pr. uge
+function histEsc(t){ return String(t==null?'':t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function isGraced(userId, monKey) { return graces.some(g=>g.userId===userId && g.from<=monKey && monKey<=g.to); }
+function histAttendIndex() {
+  const idx={};
+  Object.keys(bookings).forEach(ds=>{
+    const day=bookings[ds]; const mon=dateStr(getMonday(parseDate(ds)));
+    HIST_ROOMS.forEach(r=>(day[r]||[]).forEach(bk=>{ const m=idx[bk.userId]||(idx[bk.userId]={}); m[mon]=(m[mon]||0)+1; }));
+  });
+  return idx;
+}
+// Kun afsluttede uger (før indeværende) medregnes; graceuger udelades helt
+function histBalance(userId, weeks, idx) {
+  const todayMon=getMonday(new Date());
+  let attended=0, required=0, counted=0, gw=0;
+  weeks.forEach(w=>{
+    if(w.mon>=todayMon) return;
+    const key=dateStr(w.mon);
+    if(isGraced(userId,key)) { gw++; return; }
+    counted++; required+=HIST_REQ; attended+=(idx[userId]&&idx[userId][key])||0;
+  });
+  return {attended, required, balance:attended-required, counted, gw, avg:counted?attended/counted:0};
+}
+function histSumBal(list) {
+  const t={attended:0,required:0,balance:0,counted:0,gw:0};
+  list.forEach(b=>{ t.attended+=b.attended; t.required+=b.required; t.balance+=b.balance; t.counted+=b.counted; t.gw+=b.gw; });
+  t.avg=t.counted?t.attended/t.counted:0;
+  return t;
+}
+function histSigned(n) { return n>0?'+'+n:(n<0?'−'+Math.abs(n):'±0'); }
+function histBalBadge(b) {
+  if(!b.required) return '<span class="hist-avg" style="background:#f3f4f6;color:#6b7280">–</span>';
+  const bg=b.balance>=0?'#d1fae5':(b.balance>=-2?'#fef9c3':'#fee2e2');
+  const fg=b.balance>=0?'#065f46':(b.balance>=-2?'#92400e':'#991b1b');
+  return `<span style="display:inline-block;min-width:44px;text-align:center;padding:3px 9px;border-radius:999px;font-weight:800;font-size:13px;background:${bg};color:${fg}" title="${b.attended} dage mødt mod krav på ${b.required} (${HIST_REQ} pr. uge)">${histSigned(b.balance)}</span>`;
+}
+function canEditGrace(u) {
+  if(!currentUser) return false;
+  if(currentUser.isAdmin) return true;
+  return !!currentUser.isLeader && !u.isLeader && u.teamId===currentUser.teamId;
+}
+function histGraceInfo(userId) {
+  const todayMon=dateStr(getMonday(new Date()));
+  const mine=graces.filter(g=>g.userId===userId).sort((a,b)=>a.from<b.from?-1:1);
+  const cur=mine.find(g=>g.from<=todayMon && todayMon<=g.to);
+  const fut=mine.find(g=>g.from>todayMon);
+  const wn=k=>'U'+getWeekNumber(parseDate(k));
+  if(cur) return {text:'Grace til '+wn(cur.to), active:true};
+  if(fut) return {text:'Grace fra '+wn(fut.from), active:false};
+  return {text:'', active:false};
+}
+function histBalCard(user, bal, curWeekCount, curGraced) {
+  const good=bal.balance>=0, none=!bal.required;
+  const color=none?'#6b7280':(good?'#065f46':(bal.balance>=-2?'#92400e':'#991b1b'));
+  const bg=none?'#f3f4f6':(good?'#d1fae5':(bal.balance>=-2?'#fef9c3':'#fee2e2'));
+  const head=none?'Ingen afsluttede uger i perioden'
+    : bal.balance>0 ? `${bal.balance} dag${bal.balance===1?'':'e'} over kravet`
+    : bal.balance<0 ? `${Math.abs(bal.balance)} dag${bal.balance===-1?'':'e'} mangler`
+    : 'Du er præcis i balance';
+  const sub=none?'':`${bal.attended} dage mødt mod krav på ${bal.required} (${HIST_REQ} pr. uge i ${bal.counted} afsluttede uge${bal.counted===1?'':'r'}). Gennemsnit: ${bal.avg.toFixed(1).replace('.',',')} dage pr. uge.`;
+  const extra=[];
+  if(bal.gw) extra.push(`${bal.gw} uge${bal.gw===1?'':'r'} med grace er ikke medregnet.`);
+  extra.push(curGraced?'Indeværende uge har grace.':`Indeværende uge: ${curWeekCount} af ${HIST_REQ} dage indtil nu (indgår først i saldoen, når ugen er slut).`);
+  return `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;background:${bg};border-radius:14px;padding:16px 18px;margin-bottom:16px">
+    <div style="font-size:34px;font-weight:900;color:${color};min-width:70px">${none?'–':histSigned(bal.balance)}</div>
+    <div style="flex:1;min-width:220px"><div style="font-size:16px;font-weight:800;color:${color}">${head}</div>
+    <div style="font-size:13px;color:#374151;margin-top:2px">${sub}</div>
+    <div style="font-size:12px;color:#4b5563;margin-top:2px">${extra.join(' ')}</div></div></div>`;
 }
 
 function renderHistory() {
@@ -1456,40 +1539,153 @@ function renderHistory() {
   const todayMon=getMonday(new Date());
   if(!users.length){ content.innerHTML='<p style="color:var(--text-muted)">Ingen medarbejdere at vise.</p>'; return; }
   const ids=new Set(users.map(u=>u.id));
+  const idx=histAttendIndex();
+  const bals={}; users.forEach(u=>{ bals[u.id]=histBalance(u.id,weeks,idx); });
 
   if(mode==='matrix') { renderHistoryMatrix(teamId, users, periodVal); return; }
 
   if(mode==='byperson' || mode==='byteam') {
     const groups = mode==='byteam'
-      ? teams.map(t=>({label:t.name, color:TEAM_COLORS[t.colorIdx], ids:new Set(users.filter(u=>u.teamId===t.id).map(u=>u.id))}))
-      : users.map(u=>({label:(u.isLeader?'[TL] ':'')+u.name, color:null, ids:new Set([u.id])}));
+      ? teams.map(t=>({label:t.name, color:TEAM_COLORS[t.colorIdx], list:users.filter(u=>u.teamId===t.id)})).filter(g=>g.list.length)
+      : users.map(u=>({label:(u.isLeader?'[TL] ':'')+u.name, color:null, list:[u]}));
     const rows=groups.map(g=>{
+      const gids=new Set(g.list.map(u=>u.id));
       const tot={basen:0,netvaerket:0,skyen:0,no_plads:0,total:0};
-      weeks.forEach(w=>{const r=histCountWeek(g.ids,w.mon);HIST_ROOMS.forEach(k=>tot[k]+=r[k]);tot.total+=r.total;});
-      return {g,tot};
+      weeks.forEach(w=>{const r=histCountWeek(gids,w.mon);HIST_ROOMS.forEach(k=>tot[k]+=r[k]);tot.total+=r.total;});
+      return {g,tot,bal:histSumBal(g.list.map(u=>bals[u.id]))};
     });
+    if(mode==='byperson') rows.sort((a,b)=>(a.bal.required&&b.bal.required? a.bal.balance-b.bal.balance : 0)||a.g.label.localeCompare(b.g.label,'da'));
     const all=histSumRows(rows.map(r=>r.tot));
-    let html=histTiles(all)+histLegend()+histHead(`<th style="position:sticky;left:0;background:var(--navy);z-index:2">${mode==='byteam'?'Team':'Medarbejder'}</th>`);
-    rows.forEach(({g,tot})=>{
+    const allBal=histSumBal(rows.map(r=>r.bal));
+    const under=mode==='byperson'?rows.filter(r=>r.bal.required&&r.bal.balance<0).length:0;
+    const summary=`<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+      <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px 14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">Samlet saldo mod ${HIST_REQ} dage/uge</div>
+      <div style="margin-top:4px">${histBalBadge(allBal)} <span style="font-size:12px;color:var(--text-muted);margin-left:6px">${allBal.attended} mødt / ${allBal.required} krav</span></div></div>`+
+      (mode==='byperson'?`<div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px 14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">Under kravet</div><div style="font-size:20px;font-weight:800;margin-top:2px">${under} <span style="font-size:12px;font-weight:500;color:var(--text-muted)">af ${rows.length}</span></div></div>`:'')+`</div>`;
+    let html=summary+histTiles(all)+histLegend()+
+      histHead(`<th style="position:sticky;left:0;background:var(--navy);z-index:2">${mode==='byteam'?'Team':'Medarbejder'}</th>`,
+        `<th style="text-align:center">Saldo</th><th style="text-align:center">Mødt / krav</th>${mode==='byperson'?'<th style="text-align:center">Gns./uge</th><th>Grace</th>':''}`);
+    rows.forEach(({g,tot,bal})=>{
       const badge=g.color?`<span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${g.color.swatch};margin-right:7px"></span>`:'';
-      html+=`<tr><td class="member-name-cell" style="position:sticky;left:0;background:#fff;z-index:1">${badge}${g.label}</td>${histRoomCells(tot)}</tr>`;
+      let extra=`<td style="text-align:center">${histBalBadge(bal)}</td><td style="text-align:center;white-space:nowrap">${bal.required?bal.attended+' / '+bal.required:'–'}</td>`;
+      if(mode==='byperson') {
+        const u=g.list[0], gi=histGraceInfo(u.id);
+        const chip=gi.text?`<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${gi.active?'#dbeafe':'#f3f4f6'};color:${gi.active?'#1e40af':'#4b5563'};margin-right:4px">${gi.text}</span>`
+          :(bal.gw?`<span style="font-size:11px;color:var(--text-muted);margin-right:4px">${bal.gw} uge${bal.gw===1?'':'r'}</span>`:'');
+        const btn=canEditGrace(u)?`<button class="btn btn-secondary" style="padding:2px 8px;font-size:12px" data-u="${histEsc(u.id)}" onclick="openGraceModal(this.dataset.u)" title="Rediger graceperioder">✎</button>`:'';
+        extra+=`<td style="text-align:center;font-weight:700">${bal.counted?bal.avg.toFixed(1).replace('.',','):'–'}</td><td style="white-space:nowrap">${chip}${btn}</td>`;
+      }
+      html+=`<tr><td class="member-name-cell" style="position:sticky;left:0;background:#fff;z-index:1">${badge}${histEsc(g.label)}</td>${extra}${histRoomCells(tot)}</tr>`;
     });
-    html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Tæller registrerede dage til og med i dag i den valgte periode.</p>`;
+    html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Saldo = mødte dage minus krav på ${HIST_REQ} dage pr. uge i afsluttede uger i den valgte periode (indeværende uge medregnes ikke). Uger med grace udelades. Rummene tæller registrerede dage til og med i dag.${mode==='byperson'?' Sorteret med største mangel øverst.':''}</p>`;
     content.innerHTML=html; return;
   }
 
-  // Lokalefordeling pr. uge (nyeste øverst)
-  const rows=weeks.map(w=>{ const r=histCountWeek(ids,w.mon); r.wn=w.wn; r.mon=w.mon; r.future=w.mon>todayMon; return r; });
+  // Fremmøde og lokalefordeling pr. uge (nyeste øverst)
+  const single = users.length===1 ? users[0] : null;
+  const rows=weeks.map(w=>{
+    const r=histCountWeek(ids,w.mon); r.wn=w.wn; r.mon=w.mon; r.future=w.mon>todayMon; r.cur=+w.mon===+todayMon;
+    const key=dateStr(w.mon);
+    const gcount=users.filter(u=>isGraced(u.id,key)).length;
+    r.gcount=gcount; r.req=r.mon<todayMon?HIST_REQ*(users.length-gcount):0; r.allGraced=gcount===users.length;
+    return r;
+  });
   const all=histSumRows(rows);
-  const who = users.length===1 ? users[0].name : (teamId==='ALL' ? 'Alle teams' : (teams.find(t=>t.id===teamId)?.name||'')+' ('+users.length+' personer)');
-  let html=`<div style="font-size:15px;font-weight:800;margin-bottom:10px">${who}</div>`+histTiles(all)+histLegend()+histHead('<th>Uge</th><th>Periode</th>');
+  const who = single ? single.name : (teamId==='ALL' ? 'Alle teams' : (teams.find(t=>t.id===teamId)?.name||'')+' ('+users.length+' personer)');
+  let html=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px"><div style="font-size:15px;font-weight:800">${histEsc(who)}</div>`+
+    (single&&canEditGrace(single)?`<button class="btn btn-secondary" style="padding:3px 10px;font-size:12px" data-u="${histEsc(single.id)}" onclick="openGraceModal(this.dataset.u)">Graceperioder</button>`:'')+`</div>`;
+  if(single) {
+    const curRow=rows.find(r=>r.cur);
+    html+=histBalCard(single,bals[single.id],curRow?curRow.total:0,curRow?curRow.allGraced:false);
+  } else {
+    html+=`<div style="margin-bottom:14px">${histBalBadge(histSumBal(users.map(u=>bals[u.id])))} <span style="font-size:12px;color:var(--text-muted);margin-left:6px">samlet saldo mod ${HIST_REQ} dage/uge (afsluttede uger)</span></div>`;
+  }
+  html+=histTiles(all)+histLegend()+histHead('<th>Uge</th><th>Periode</th>','<th style="text-align:center">Mod krav</th>');
+  const fmt=d=>d.toLocaleDateString('da-DK',{day:'numeric',month:'short'});
   rows.slice().reverse().forEach(r=>{
     const end=new Date(r.mon); end.setDate(end.getDate()+6);
-    const fmt=d=>d.toLocaleDateString('da-DK',{day:'numeric',month:'short'});
-    html+=`<tr><td style="font-weight:700">U${r.wn}</td><td style="color:var(--text-muted);white-space:nowrap">${fmt(r.mon)} – ${fmt(end)}</td>${histRoomCells(r)}</tr>`;
+    let cell;
+    if(r.future) cell='<span style="color:#9ca3af">–</span>';
+    else if(r.cur) cell=r.allGraced?'<span style="font-size:11px;font-weight:700;color:#1e40af">Grace</span>':`<span style="font-size:12px;color:var(--text-muted)">igangværende</span>`;
+    else if(r.allGraced) cell='<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:#dbeafe;color:#1e40af">Grace</span>';
+    else cell=histBalBadge({attended:r.total,required:r.req,balance:r.total-r.req})+(r.gcount?`<div style="font-size:10px;color:var(--text-muted)">${r.gcount} m. grace</div>`:'');
+    html+=`<tr><td style="font-weight:700">U${r.wn}</td><td style="color:var(--text-muted);white-space:nowrap">${fmt(r.mon)} – ${fmt(end)}</td><td style="text-align:center">${cell}</td>${histRoomCells(r)}</tr>`;
   });
-  html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">Tæller registrerede dage til og med i dag. Den igangværende uge er derfor ikke færdig.</p>`;
+  html+=`</tbody></table><p style="margin-top:10px;font-size:12px;color:var(--text-muted)">"Mod krav" viser mødte dage minus ${HIST_REQ}${single?'':' pr. person'} i hver afsluttet uge. Tæller registrerede dage til og med i dag; den igangværende uge er ikke færdig.</p>`;
   content.innerHTML=html;
+}
+
+// ── Graceperioder ──
+async function graceSave(userId, fromStr, toStr) {
+  if(currentUser.isLive) {
+    const r = await sb('POST','rpc/pladsskema_set_grace',{body:{p_leader:currentUser.initials,p_code:currentUser.code,p_user_key:userId,p_from:fromStr,p_to:toStr}});
+    if(r.status==='denied') throw new Error('Du har ikke rettigheder til at give grace til denne medarbejder');
+    if(r.status!=='ok') throw new Error('Ugyldig periode');
+    const gr = await sb('GET','pladsskema_grace',{query:'?select=*&limit=2000'});
+    graces = gr.map(g=>({id:g.id,userId:g.user_key,from:g.from_week,to:g.to_week}));
+  } else {
+    graces.push({id:'local'+Date.now(),userId,from:dateStr(getMonday(parseDate(fromStr))),to:dateStr(getMonday(parseDate(toStr)))});
+  }
+}
+async function graceDelete(id) {
+  if(currentUser.isLive) {
+    const r = await sb('POST','rpc/pladsskema_delete_grace',{body:{p_leader:currentUser.initials,p_code:currentUser.code,p_id:id}});
+    if(r.status==='denied') throw new Error('Du har ikke rettigheder til at fjerne denne grace');
+  }
+  graces = graces.filter(g=>String(g.id)!==String(id));
+}
+
+function openGraceModal(userId) {
+  const u = buildDemoUsers().find(x=>x.id===userId);
+  if(!u || !canEditGrace(u)) return;
+  const old=document.getElementById('graceOverlay'); if(old) old.remove();
+  const ov=document.createElement('div'); ov.id='graceOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=document.createElement('div');
+  box.style.cssText='background:#fff;border-radius:14px;max-width:460px;width:100%;max-height:90vh;overflow:auto;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.35);font-family:inherit';
+  ov.appendChild(box); document.body.appendChild(ov);
+  const fmtW=k=>{ const d=parseDate(k); const e=new Date(d); e.setDate(e.getDate()+6); return 'U'+getWeekNumber(d)+' ('+d.toLocaleDateString('da-DK',{day:'numeric',month:'short',year:'numeric'})+')'; };
+  const draw=()=>{
+    const list=graces.filter(g=>g.userId===userId).sort((a,b)=>a.from<b.from?-1:1);
+    const todayMon=dateStr(getMonday(new Date()));
+    box.innerHTML=`<div style="font-weight:800;font-size:17px;margin-bottom:2px">Grace – ${histEsc(u.name)}</div>
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Uger med grace indgår ikke i beregningen af fremmødekravet (${HIST_REQ} dage pr. uge).</div>
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-bottom:6px">Eksisterende perioder</div>
+      <div id="graceList">${list.length?list.map(g=>`<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;font-size:13px"><div style="flex:1">${fmtW(g.from)} – ${fmtW(g.to)}${g.from<=todayMon&&todayMon<=g.to?' <span style="color:#1e40af;font-weight:700">· aktiv nu</span>':''}</div><button class="btn btn-secondary" style="padding:2px 9px;font-size:12px" data-id="${histEsc(g.id)}">Fjern</button></div>`).join(''):'<div style="font-size:13px;color:var(--text-muted);margin-bottom:6px">Ingen.</div>'}</div>
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin:14px 0 6px">Tilføj grace</div>
+      <label class="form-label">Fra og med (hele ugen tæller)</label>
+      <input type="date" class="form-select" id="graceFrom" value="${todayMon}">
+      <label class="form-label" style="margin-top:10px">Varighed</label>
+      <select class="form-select" id="graceKind"><option value="n">Antal uger</option><option value="to">Til og med en given uge</option></select>
+      <div id="graceKindWrap" style="margin-top:8px"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px"><button class="btn btn-secondary" id="graceClose">Luk</button><button class="btn btn-primary" id="graceAdd">Tilføj grace</button></div>`;
+    const wrap=box.querySelector('#graceKindWrap');
+    const drawKind=()=>{
+      if(box.querySelector('#graceKind').value==='n') wrap.innerHTML='<input type="number" min="1" max="52" value="4" class="form-select" id="graceN"> <div style="font-size:12px;color:var(--text-muted);margin-top:4px">Antal uger inkl. startugen (maks. 52)</div>';
+      else { const d=new Date(); d.setDate(d.getDate()+21); wrap.innerHTML=`<input type="date" class="form-select" id="graceTo" value="${dateStr(d)}"><div style="font-size:12px;color:var(--text-muted);margin-top:4px">Ugen datoen ligger i, er sidste grace-uge</div>`; }
+    };
+    box.querySelector('#graceKind').onchange=drawKind; drawKind();
+    box.querySelector('#graceClose').onclick=()=>{ ov.remove(); renderHistory(); };
+    box.querySelectorAll('#graceList button[data-id]').forEach(b=>b.onclick=async()=>{
+      try { await graceDelete(b.dataset.id); showToast('Grace fjernet','success'); draw(); }
+      catch(e) { showToast(e.message,'error'); }
+    });
+    box.querySelector('#graceAdd').onclick=async()=>{
+      const from=box.querySelector('#graceFrom').value;
+      if(!from) { showToast('Vælg en startdato','error'); return; }
+      let to;
+      if(box.querySelector('#graceKind').value==='n') {
+        const n=parseInt(box.querySelector('#graceN').value,10);
+        if(!(n>=1&&n<=52)) { showToast('Antal uger skal være mellem 1 og 52','error'); return; }
+        const m=getMonday(parseDate(from)); m.setDate(m.getDate()+(n-1)*7); to=dateStr(m);
+      } else to=box.querySelector('#graceTo').value;
+      if(!to) { showToast('Vælg en slutdato','error'); return; }
+      if(dateStr(getMonday(parseDate(to)))<dateStr(getMonday(parseDate(from)))) { showToast('Slutdato må ikke ligge før startdato','error'); return; }
+      try { await graceSave(userId, from, to); showToast('Grace gemt','success'); draw(); }
+      catch(e) { showToast(e.message,'error'); }
+    };
+  };
+  draw();
 }
 
 function getMemberWeekDays(userId, mondayDate) {
