@@ -255,6 +255,7 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
         <button class="nav-tab active" onclick="showView('calendar')">📅 Pladsskema</button>
         <button class="nav-tab" onclick="showView('lunch')" id="lunchTab" style="display:none">🍽️ Frokostskema</button>
         <button class="nav-tab" onclick="showView('history')" id="histTab">📊 Historik</button>
+        <button class="nav-tab" onclick="showView('employees')" id="empTab" style="display:none">👥 Medarbejdere</button>
       </div>
     </div>
     <div class="nav-right">
@@ -302,6 +303,11 @@ body{font-family:'Barlow',sans-serif;background:var(--bg);color:var(--text);min-
     </div>
     <div class="hist-body"><div id="histContent"></div></div>
   </div>
+
+<!-- EMPLOYEES VIEW (kun ledere) -->
+<div id="viewEmployees" style="display:none;flex:1;overflow-y:auto;background:var(--bg);padding-bottom:40px">
+  <div id="empContent" style="padding:20px;max-width:1100px;margin:0 auto"></div>
+</div>
 
 <!-- LUNCH VIEW -->
 <div id="viewLunch" style="display:none;flex:1;overflow-y:auto;background:var(--bg);padding-bottom:40px">
@@ -469,6 +475,7 @@ async function liveRenameMembers(items) {
 }
 
 async function refreshLiveAll() {
+  empData = null;
   const roster = await sb('GET','pladsskema_users',{query:'?select=user_key,name,initials,team_id,is_leader&limit=2000'});
   applyRoster(roster);
   await loadLiveData(false);
@@ -863,6 +870,8 @@ function startApp() {
   // Lunch: visible for KS, TS, Drift and leaders — NOT for U&I
   const showLunch = myTeamCat2==='Kundeservice' || myTeamCat2==='Teknisk Support' || myTeamCat2==='Drift' || currentUser.isLeader;
   if(showLunch) document.getElementById('lunchTab').style.display='';
+  document.getElementById('empTab').style.display = currentUser.isLeader ? '' : 'none'; // kun teamledere
+  empData = null; empCat = 'TS'; empSearch = '';
 
   buildLegend();
   populateHistTeamSelect();
@@ -880,10 +889,12 @@ function showView(v) {
   document.getElementById('viewCalendar').style.display = v==='calendar' ? '' : 'none';
   document.getElementById('viewHistory').style.display  = v==='history'  ? '' : 'none';
   document.getElementById('viewLunch').style.display    = v==='lunch'    ? '' : 'none';
+  document.getElementById('viewEmployees').style.display = v==='employees' ? '' : 'none';
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.querySelector(`.nav-tab[onclick="showView('${v}')"]`).classList.add('active');
   if (v==='history') renderHistory();
   if (v==='lunch')   renderLunch();
+  if (v==='employees') empShow();
 }
 
 // ═══════════════════════
@@ -1813,6 +1824,246 @@ function renderHistoryMatrix(teamId, users, periodVal) {
 
   content.innerHTML = html;
   attachTooltips();
+}
+
+
+// ═══════════════════════
+// MEDARBEJDERE (kun ledere): roller og kompetencer
+// ═══════════════════════
+const EMP_CATS = { TS:{label:'Teknisk Support', teamIds:['t3','t4','t5']}, KS:{label:'Kundeservice', teamIds:['t0','t1','t2']} };
+const EMP_ROLES = {
+  TS:['Teknisk Supporter - Fastansat','Teknisk Supporter - Studentermedhjælper','TUK','Problem Manager'],
+  KS:['Kundeservice medarbejder','TUK']
+};
+const EMP_GROUPS = ['Prioritet','Øvrige skills','Uddannelse'];
+// Skabeloner (bruges kun i demo – live ligger de i databasen)
+const EMP_DEMO_DEFS = {
+  TS:[['Prioritet','Internet'],['Prioritet','TV+Telefoni'],['Øvrige skills','RT Sager'],['Øvrige skills','Tickets'],['Øvrige skills','Gulvvagt'],['Øvrige skills','Stafet'],['Øvrige skills','Chat'],['Øvrige skills','WIFI index'],['Øvrige skills','TDC/EWII'],['Øvrige skills','Mentor'],['Øvrige skills','HU'],['Øvrige skills','LF hybrid'],['Øvrige skills','SA hybrid'],['Øvrige skills','Regning'],['Øvrige skills','CHATBOT'],['Øvrige skills','Reception'],['Øvrige skills','Heartbeat liste'],['Uddannelse','Konflikthåndtering','tekst'],['Uddannelse','Enneagram','tekst']],
+  KS:[['Prioritet','1. prio generel'],['Prioritet','2. prio generel'],['Prioritet','1. prio regning'],['Prioritet','2. prio regning'],['Øvrige skills','Regning Hotline'],['Øvrige skills','Klager'],['Øvrige skills','Tickets'],['Øvrige skills','Chat'],['Øvrige skills','WSS'],['Øvrige skills','HU'],['Øvrige skills','Mentor'],['Øvrige skills','LF hybrid'],['Øvrige skills','SA Flyt'],['Øvrige skills','Receptionen'],['Øvrige skills','Heartbeat liste'],['Uddannelse','Konflikthåndtering','tekst'],['Uddannelse','Enneagram','tekst']]
+};
+let empData = null;          // {categories, canEdit, defs[], comps{userId|compId:{s,n}}, roles{userId:role}}
+let empCat = 'TS', empSearch = '';
+
+function empBuildDemo() {
+  let id=1; const defs=[];
+  ['TS','KS'].forEach(c=>EMP_DEMO_DEFS[c].forEach((d,i)=>defs.push({id:id++,category:c,grp:d[0],name:d[1],kind:d[2]||'skill',sort:i})));
+  const own=empCatOfTeam(currentUser.teamId);
+  return { categories:(currentUser.isAdmin||own==='Drift')?['TS','KS']:[own], canEdit:currentUser.isAdmin?['TS','KS']:[empCatOfTeam(currentUser.teamId)].filter(x=>x!=='Drift'), defs, comps:{}, roles:{} };
+}
+function empCatOfTeam(tid) { return EMP_CATS.TS.teamIds.includes(tid)?'TS':EMP_CATS.KS.teamIds.includes(tid)?'KS':'Drift'; }
+function empCanEdit(cat) { return !!empData && empData.canEdit.includes(cat); }
+function empRpc(name, body) {
+  return sb('POST','rpc/'+name,{body:Object.assign({p_leader:currentUser.initials,p_code:currentUser.code},body)});
+}
+async function empLoad() {
+  if(!currentUser.isLive) { if(!empData) empData = empBuildDemo(); return; }
+  const r = await empRpc('pladsskema_emp_data',{});
+  if(r.status!=='ok') throw new Error('Ingen adgang – log ind igen');
+  const comps={}; r.comps.forEach(c=>{ comps[c.u+'|'+c.c]={s:c.s,n:c.n||''}; });
+  const roles={}; r.roles.forEach(x=>{ roles[x.u]=x.r; });
+  empData = { categories:r.categories, canEdit:r.canEdit, defs:r.defs, comps, roles };
+}
+async function empShow() {
+  const box=document.getElementById('empContent');
+  if(!currentUser.isLeader) { box.innerHTML=''; return; }
+  if(!empData) box.innerHTML='<p style="color:var(--text-muted)">Henter medarbejdere…</p>';
+  try { await empLoad(); } catch(e) { box.innerHTML='<p style="color:#b91c1c">Kunne ikke hente medarbejdere: '+histEsc(e.message)+'</p>'; return; }
+  if(!empData.categories.includes(empCat)) empCat=empData.categories[0];
+  empRender();
+}
+function empUsers(cat) {
+  const all=buildDemoUsers();
+  return EMP_CATS[cat].teamIds.map(tid=>{
+    const t=teams.find(x=>x.id===tid); if(!t) return null;
+    const leader=all.find(u=>u.teamId===tid&&u.isLeader);
+    const members=all.filter(u=>u.teamId===tid&&!u.isLeader).sort((a,b)=>a.name.localeCompare(b.name,'da'));
+    return {team:t, leader, members};
+  }).filter(Boolean);
+}
+function empCount(userId, cat) {
+  let n=0; empData.defs.forEach(d=>{ if(d.category===cat&&d.kind==='skill'){ const c=empData.comps[userId+'|'+d.id]; if(c&&c.s==='ja') n++; } });
+  return n;
+}
+function empRender() {
+  const box=document.getElementById('empContent');
+  const cat=empCat, canEdit=empCanEdit(cat);
+  const groups=empUsers(cat);
+  const total=groups.reduce((a,g)=>a+g.members.length,0);
+  let html=`<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <h2 style="font-size:20px;font-weight:800;margin-right:6px">Medarbejdere – ${EMP_CATS[cat].label}</h2>`;
+  if(empData.categories.length>1) html+=`<select class="form-select" style="width:auto" onchange="empCat=this.value;empSearch='';empRender()">${empData.categories.map(c=>`<option value="${c}" ${c===cat?'selected':''}>${EMP_CATS[c].label}</option>`).join('')}</select>`;
+  html+=`<input id="empSearchInp" class="form-select" style="width:220px" placeholder="Søg navn, initialer eller rolle" value="${histEsc(empSearch)}" oninput="empSearch=this.value;empRenderList()">
+    <span style="color:var(--text-muted);font-size:13px">${total} medarbejdere i alt</span>
+    ${canEdit?'<button class="btn btn-secondary" style="margin-left:auto" onclick="empManageComps()">⚙ Administrér kompetencer</button>':''}</div>
+    ${canEdit?'':'<p style="font-size:12px;color:var(--text-muted);margin:-6px 0 12px">Du kan se, men ikke redigere, denne afdeling.</p>'}
+    <div id="empList"></div>`;
+  box.innerHTML=html;
+  empRenderList();
+}
+function empRenderList() {
+  const cat=empCat, canEdit=empCanEdit(cat), q=empSearch.trim().toLowerCase();
+  const wrap=document.getElementById('empList'); if(!wrap) return;
+  let html='';
+  empUsers(cat).forEach(g=>{
+    const col=TEAM_COLORS[g.team.colorIdx]||{bg:'#374151',text:'#fff',swatch:'#9ca3af'};
+    const roleCount={}; g.members.forEach(u=>{ const r=empData.roles[u.id]; if(r) roleCount[r]=(roleCount[r]||0)+1; });
+    const noRole=g.members.filter(u=>!empData.roles[u.id]).length;
+    const rows=g.members.filter(u=>!q||(u.name+' '+(u.initials||'')+' '+(empData.roles[u.id]||'')).toLowerCase().includes(q));
+    html+=`<div style="background:#fff;border:1px solid var(--border);border-radius:14px;margin-bottom:18px;overflow:hidden">
+      <div style="background:${col.bg};color:${col.text};padding:12px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="font-size:16px;font-weight:800">${histEsc(g.leader?g.leader.name:g.team.name)}</div>
+        <div style="font-size:12px;opacity:.85">${histEsc(g.team.name)}</div>
+        <div style="margin-left:auto;background:rgba(255,255,255,.2);border-radius:999px;padding:3px 12px;font-size:13px;font-weight:800">${g.members.length} medarbejder${g.members.length===1?'':'e'}</div>
+      </div>
+      <div style="padding:8px 18px;font-size:12px;color:var(--text-muted);border-bottom:1px solid var(--border);display:flex;gap:14px;flex-wrap:wrap">
+        ${EMP_ROLES[cat].map(r=>`<span><b style="color:var(--text)">${roleCount[r]||0}</b> ${histEsc(r)}</span>`).join('')}
+        ${noRole?`<span><b style="color:#b45309">${noRole}</b> uden rolle</span>`:''}
+      </div>`;
+    if(!rows.length) html+='<div style="padding:14px 18px;color:var(--text-muted);font-size:13px">Ingen medarbejdere.</div>';
+    rows.forEach(u=>{
+      const role=empData.roles[u.id]||'', n=empCount(u.id,cat);
+      const roleCell = canEdit
+        ? `<select class="form-select" style="width:auto;min-width:240px;padding:5px 8px;font-size:13px" onclick="event.stopPropagation()" data-u="${histEsc(u.id)}" onchange="empSetRole(this.dataset.u,this.value)"><option value="">– Vælg rolle –</option>${EMP_ROLES[cat].map(r=>`<option value="${histEsc(r)}" ${r===role?'selected':''}>${histEsc(r)}</option>`).join('')}</select>`
+        : `<span style="font-size:13px">${role?histEsc(role):'<span style="color:var(--text-muted)">–</span>'}</span>`;
+      html+=`<div class="emp-row" data-u="${histEsc(u.id)}" onclick="empOpen(this.dataset.u)" style="display:flex;align-items:center;gap:14px;padding:9px 18px;border-bottom:1px solid var(--border);cursor:pointer">
+        <div style="flex:1;min-width:160px"><div style="font-weight:700">${histEsc(u.name)}</div>${u.initials&&u.initials.toUpperCase()!==u.name.toUpperCase()?`<div style="font-size:12px;color:var(--text-muted)">${histEsc(u.initials)}</div>`:''}</div>
+        <div>${roleCell}</div>
+        <div style="font-size:12px;color:var(--text-muted);min-width:110px;text-align:right">${n} kompetence${n===1?'':'r'} ›</div>
+      </div>`;
+    });
+    html+='</div>';
+  });
+  wrap.innerHTML=html;
+}
+async function empSetRole(userId, role) {
+  const prev=empData.roles[userId]||'';
+  try {
+    if(currentUser.isLive) {
+      const r=await empRpc('pladsskema_set_role',{p_user_key:userId,p_role:role});
+      if(r.status==='denied') throw new Error('Du har ikke rettigheder til at ændre denne medarbejder');
+      if(r.status!=='ok') throw new Error('Ugyldig rolle');
+    }
+    if(role) empData.roles[userId]=role; else delete empData.roles[userId];
+    showToast('Rolle gemt','success');
+  } catch(e) { showToast(e.message,'error'); if(prev) empData.roles[userId]=prev; }
+  empRenderList();
+}
+async function empSaveComp(userId, compId, status, note) {
+  const key=userId+'|'+compId;
+  if(!status && note) status='ja';
+  if(currentUser.isLive) {
+    const r=await empRpc('pladsskema_set_comp',{p_user_key:userId,p_comp_id:compId,p_status:status||'',p_note:note||''});
+    if(r.status==='denied') throw new Error('Du har ikke rettigheder til at ændre denne medarbejder');
+    if(r.status!=='ok') throw new Error('Kunne ikke gemme');
+  }
+  if(status) empData.comps[key]={s:status,n:note||''}; else delete empData.comps[key];
+}
+function empOverlay(id) {
+  const old=document.getElementById(id); if(old) old.remove();
+  const ov=document.createElement('div'); ov.id=id;
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=document.createElement('div');
+  box.style.cssText='background:#fff;border-radius:14px;max-width:560px;width:100%;max-height:92vh;overflow:auto;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.35);font-family:inherit';
+  ov.appendChild(box); document.body.appendChild(ov);
+  ov.addEventListener('mousedown',e=>{ if(e.target===ov) { ov.remove(); empRenderList(); } });
+  return {ov,box};
+}
+function empOpen(userId) {
+  const u=buildDemoUsers().find(x=>x.id===userId); if(!u) return;
+  const cat=empCatOfTeam(u.teamId); if(cat==='Drift') return;
+  const canEdit=empCanEdit(cat);
+  const {ov,box}=empOverlay('empOverlay');
+  const team=teams.find(t=>t.id===u.teamId);
+  const leader=buildDemoUsers().find(x=>x.teamId===u.teamId&&x.isLeader);
+  const draw=()=>{
+    const defs=empData.defs.filter(d=>d.category===cat);
+    const grps=[...new Set(defs.map(d=>d.grp))];
+    const role=empData.roles[userId]||'';
+    let html=`<div style="display:flex;align-items:flex-start;gap:10px"><div style="flex:1"><div style="font-size:19px;font-weight:800">${histEsc(u.name)}</div>
+      <div style="font-size:13px;color:var(--text-muted)">${u.initials&&u.initials.toUpperCase()!==u.name.toUpperCase()?histEsc(u.initials)+' · ':''}${histEsc(team?team.name:'')}${leader?' · Leder: '+histEsc(leader.name):''}</div></div>
+      <button class="btn btn-secondary" id="empClose" style="padding:3px 10px">Luk</button></div>
+      <div style="margin:14px 0 4px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">Rolle</div>
+      ${canEdit?`<select class="form-select" id="empRoleSel"><option value="">– Vælg rolle –</option>${EMP_ROLES[cat].map(r=>`<option ${r===role?'selected':''}>${histEsc(r)}</option>`).join('')}</select>`:`<div style="font-size:14px">${role?histEsc(role):'–'}</div>`}`;
+    grps.forEach(g=>{
+      html+=`<div style="margin:18px 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">${histEsc(g)}</div>`;
+      defs.filter(d=>d.grp===g).forEach(d=>{
+        const c=empData.comps[userId+'|'+d.id]||{s:'',n:''};
+        if(d.kind==='tekst') {
+          html+=`<div style="display:flex;align-items:center;gap:10px;padding:5px 0"><div style="flex:1;font-size:14px;font-weight:600">${histEsc(d.name)}</div>
+            ${canEdit?`<input class="form-select" style="width:210px;padding:5px 8px" data-c="${d.id}" data-k="tekst" value="${histEsc(c.n)}" placeholder="Dato / tekst">`:`<span style="font-size:13px">${c.n?histEsc(c.n):'–'}</span>`}</div>`;
+        } else {
+          const badge=c.s==='ja'?'<span style="background:#d1fae5;color:#065f46;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700">Ja</span>':c.s==='i_bero'?'<span style="background:#fef9c3;color:#92400e;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700">I bero</span>':'<span style="color:#c0c4cc">–</span>';
+          html+=`<div style="display:flex;align-items:center;gap:10px;padding:5px 0"><div style="flex:1;font-size:14px;font-weight:600">${histEsc(d.name)}</div>`+
+            (canEdit?`<select class="form-select" style="width:90px;padding:5px 6px" data-c="${d.id}" data-k="s"><option value="" ${!c.s?'selected':''}>–</option><option value="ja" ${c.s==='ja'?'selected':''}>Ja</option><option value="i_bero" ${c.s==='i_bero'?'selected':''}>I bero</option></select>
+              <input class="form-select" style="width:130px;padding:5px 8px" data-c="${d.id}" data-k="n" value="${histEsc(c.n)}" placeholder="Note / dato">`
+            :`<span style="font-size:12px;color:var(--text-muted)">${c.n?histEsc(c.n):''}</span>${badge}`)+`</div>`;
+        }
+      });
+    });
+    box.innerHTML=html;
+    box.querySelector('#empClose').onclick=()=>{ ov.remove(); empRenderList(); };
+    const rs=box.querySelector('#empRoleSel'); if(rs) rs.onchange=async()=>{ await empSetRole(userId,rs.value); };
+    const save=async(cid,status,note)=>{ try { await empSaveComp(userId,cid,status,note); } catch(e) { showToast(e.message,'error'); } draw(); };
+    box.querySelectorAll('select[data-k="s"]').forEach(el=>el.onchange=()=>{ const cid=+el.dataset.c; const n=box.querySelector(`input[data-c="${cid}"][data-k="n"]`).value; save(cid,el.value,n); });
+    box.querySelectorAll('input[data-k="n"]').forEach(el=>el.onchange=()=>{ const cid=+el.dataset.c; const st=box.querySelector(`select[data-c="${cid}"]`).value; save(cid,st,el.value); });
+    box.querySelectorAll('input[data-k="tekst"]').forEach(el=>el.onchange=()=>{ save(+el.dataset.c,el.value.trim()?'ja':'',el.value.trim()); });
+  };
+  draw();
+}
+function empManageComps() {
+  const cat=empCat; if(!empCanEdit(cat)) return;
+  const {ov,box}=empOverlay('empMgrOverlay');
+  const draw=()=>{
+    const defs=empData.defs.filter(d=>d.category===cat);
+    const grps=[...new Set([...EMP_GROUPS,...defs.map(d=>d.grp)])];
+    let html=`<div style="display:flex;align-items:center"><div style="flex:1;font-size:18px;font-weight:800">Kompetencer – ${EMP_CATS[cat].label}</div><button class="btn btn-secondary" id="mgrClose" style="padding:3px 10px">Luk</button></div>
+      <p style="font-size:12px;color:var(--text-muted);margin:4px 0 12px">Listen deles af alle ledere i afdelingen. Fjernes en kompetence, slettes den også for alle medarbejdere.</p>`;
+    grps.forEach(g=>{
+      const items=defs.filter(d=>d.grp===g); if(!items.length) return;
+      html+=`<div style="margin:12px 0 4px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">${histEsc(g)}</div>`;
+      items.forEach(d=>{ html+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:14px"><div style="flex:1">${histEsc(d.name)}${d.kind==='tekst'?' <span style="font-size:11px;color:var(--text-muted)">(tekst/dato)</span>':''}</div><button class="btn btn-secondary" style="padding:2px 9px;font-size:12px" data-del="${d.id}">Fjern</button></div>`; });
+    });
+    html+=`<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)"><div style="font-weight:700;margin-bottom:8px">Tilføj kompetence</div>
+      <input class="form-select" id="mgrName" placeholder="Navn, fx Servicekald" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px"><select class="form-select" id="mgrGrp">${grps.map(g=>`<option>${histEsc(g)}</option>`).join('')}<option value="__ny">+ Ny gruppe…</option></select>
+      <select class="form-select" id="mgrKind"><option value="skill">Ja / I bero + note</option><option value="tekst">Tekst / dato</option></select></div>
+      <input class="form-select" id="mgrNewGrp" placeholder="Navn på ny gruppe" style="display:none;margin-top:8px">
+      <div style="text-align:right;margin-top:12px"><button class="btn btn-primary" id="mgrAdd">Tilføj</button></div></div>`;
+    box.innerHTML=html;
+    box.querySelector('#mgrClose').onclick=()=>{ ov.remove(); empRenderList(); };
+    const gs=box.querySelector('#mgrGrp'); gs.onchange=()=>{ box.querySelector('#mgrNewGrp').style.display=gs.value==='__ny'?'':'none'; };
+    box.querySelectorAll('button[data-del]').forEach(b=>b.onclick=()=>{
+      const d=empData.defs.find(x=>String(x.id)===b.dataset.del);
+      confirmDialog('Fjern kompetencen "'+d.name+'" for alle medarbejdere i '+EMP_CATS[cat].label+'?','Fjern',async()=>{
+        try {
+          if(currentUser.isLive) { const r=await empRpc('pladsskema_delete_comp',{p_id:d.id}); if(r.status!=='ok') throw new Error('Du har ikke rettigheder til at fjerne kompetencen'); }
+          empData.defs=empData.defs.filter(x=>x.id!==d.id);
+          Object.keys(empData.comps).forEach(k=>{ if(k.endsWith('|'+d.id)) delete empData.comps[k]; });
+          showToast('Kompetence fjernet','success');
+        } catch(e) { showToast(e.message,'error'); }
+        draw();
+      });
+    });
+    box.querySelector('#mgrAdd').onclick=async()=>{
+      const name=box.querySelector('#mgrName').value.trim();
+      let grp=gs.value==='__ny'?box.querySelector('#mgrNewGrp').value.trim():gs.value;
+      const kind=box.querySelector('#mgrKind').value;
+      if(!name||!grp) { showToast('Udfyld navn og gruppe','error'); return; }
+      try {
+        let id;
+        if(currentUser.isLive) {
+          const r=await empRpc('pladsskema_add_comp',{p_category:cat,p_grp:grp,p_name:name,p_kind:kind});
+          if(r.status==='exists') throw new Error('Kompetencen findes allerede');
+          if(r.status!=='ok') throw new Error('Kunne ikke tilføje kompetencen');
+          id=r.id;
+        } else id=Date.now();
+        empData.defs.push({id,category:cat,grp,name,kind,sort:empData.defs.length+1});
+        showToast('Kompetence tilføjet','success');
+      } catch(e) { showToast(e.message,'error'); }
+      draw();
+    };
+  };
+  draw();
 }
 
 // ═══════════════════════
